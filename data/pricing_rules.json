@@ -1,0 +1,148 @@
+{
+  "$schema_version": "1.0.0",
+  "description": "RevYield pricing rulebook. Single source of truth for tier economics, contractual entitlements, discount governance and the price-test design. Consumed by data/seed_data.py (data generation) and loaded into dim_tier_entitlements for SQL joins.",
+  "currency": "EUR",
+  "calendar": {
+    "data_window_start": "2024-01-01",
+    "data_window_end": "2026-06-30",
+    "fiscal_year_start_month": 1
+  },
+  "experiment": {
+    "name": "FY26-H1 Price Card Uplift Test",
+    "hypothesis": "Enterprise demand is price-inelastic enough that a double-digit list uplift paired with tighter discount governance expands gross margin, while Starter demand is elastic enough that the same move destroys it.",
+    "window_start": "2026-01-01",
+    "window_end": "2026-06-30",
+    "assignment": "50/50 random split at the ACCOUNT level, stratified by initial tier, so a customer never sees two price cards.",
+    "eligible_deal_types": ["new_business", "expansion"],
+    "excluded_deal_types": ["renewal", "upgrade"],
+    "exclusion_rationale": "Renewals and mid-term upgrades were grandfathered onto the legacy price card, so they carry pricing_variant = 'not_in_test' and must be filtered out of the elasticity read.",
+    "quantity_unit": "contracted_seats",
+    "price_unit": "volume_weighted_realized_price_per_seat",
+    "stratification": ["contract_tier", "deal_type"],
+    "stratification_rationale": "New-business and expansion deals have very different average order sizes. Without post-stratification, a chance imbalance in deal mix between the arms swamps the elasticity signal entirely - on the Starter tier it inverts the sign. Strata are combined using control-arm exposure weights.",
+    "demand_response_channel": "order_size",
+    "demand_response_note": "The modelled demand response acts on contracted volume, not on win rate. Win rates are held equal across arms so the recovered coefficient is an unambiguous quantity elasticity; sql/01 reports win rate per arm as a falsification check."
+  },
+  "discount_governance": {
+    "approval_bands": [
+      { "max_discount_pct": 0.10, "approver": "Account Executive" },
+      { "max_discount_pct": 0.20, "approver": "Sales Manager" },
+      { "max_discount_pct": 0.30, "approver": "VP Revenue" },
+      { "max_discount_pct": 1.00, "approver": "CFO" }
+    ],
+    "floor_margin_pct": 0.45,
+    "note": "floor_margin_pct is the realized gross-margin floor below which a deal must be escalated regardless of headline discount."
+  },
+  "expansion_rules": {
+    "capacity_threshold_pct": 0.85,
+    "sustained_months_required": 2,
+    "readiness_index_weights": {
+      "seat_utilization": 0.45,
+      "api_utilization": 0.30,
+      "storage_utilization": 0.25
+    },
+    "note": "An account is flagged expansion-ready when a weighted utilization score breaches capacity_threshold_pct for sustained_months_required consecutive months."
+  },
+  "tiers": {
+    "Starter": {
+      "rank": 1,
+      "annual_list_price_per_seat": 240.0,
+      "annual_cost_to_serve_per_seat": 91.2,
+      "entitlements": {
+        "included_seats": 25,
+        "included_api_calls": 250000,
+        "included_storage_gb": 100
+      },
+      "elasticity_coefficient": -1.65,
+      "elasticity_note": "Highly elastic. SMB buyers substitute freely; the tier competes against freemium tools.",
+      "test_list_uplift_pct": 0.08,
+      "discount": {
+        "control_mean_pct": 0.06,
+        "test_mean_pct": 0.06,
+        "std_pct": 0.025,
+        "max_pct": 0.20
+      },
+      "typical_seats": { "min": 6, "mode": 18, "max": 40 },
+      "expansion_win_rate_control": 0.42,
+      "contract_term_weights": { "12": 0.85, "24": 0.13, "36": 0.02 },
+      "annual_churn_rate": 0.24
+    },
+    "Growth": {
+      "rank": 2,
+      "annual_list_price_per_seat": 150.0,
+      "annual_cost_to_serve_per_seat": 45.0,
+      "entitlements": {
+        "included_seats": 120,
+        "included_api_calls": 2000000,
+        "included_storage_gb": 750
+      },
+      "elasticity_coefficient": -0.95,
+      "elasticity_note": "Near unit-elastic. Mid-market buyers negotiate but rarely walk.",
+      "test_list_uplift_pct": 0.06,
+      "discount": {
+        "control_mean_pct": 0.09,
+        "test_mean_pct": 0.08,
+        "std_pct": 0.03,
+        "max_pct": 0.25
+      },
+      "typical_seats": { "min": 45, "mode": 110, "max": 240 },
+      "expansion_win_rate_control": 0.38,
+      "contract_term_weights": { "12": 0.62, "24": 0.30, "36": 0.08 },
+      "annual_churn_rate": 0.13
+    },
+    "Enterprise": {
+      "rank": 3,
+      "annual_list_price_per_seat": 120.0,
+      "annual_cost_to_serve_per_seat": 28.8,
+      "entitlements": {
+        "included_seats": 600,
+        "included_api_calls": 15000000,
+        "included_storage_gb": 5000
+      },
+      "elasticity_coefficient": -0.35,
+      "elasticity_note": "Inelastic. Deep integration, procurement cycles and switching costs blunt price sensitivity.",
+      "test_list_uplift_pct": 0.12,
+      "discount": {
+        "control_mean_pct": 0.12,
+        "test_mean_pct": 0.105,
+        "std_pct": 0.035,
+        "max_pct": 0.30
+      },
+      "typical_seats": { "min": 220, "mode": 560, "max": 1400 },
+      "expansion_win_rate_control": 0.31,
+      "contract_term_weights": { "12": 0.34, "24": 0.44, "36": 0.22 },
+      "annual_churn_rate": 0.06
+    }
+  },
+  "segmentation": {
+    "tier_mix": { "Starter": 0.44, "Growth": 0.36, "Enterprise": 0.20 },
+    "tier_mix_note": "Book-of-business mix, not a headcount distribution. Enterprise is deliberately over-represented relative to a pure lognormal firmographic draw so the price test has enough Enterprise exposure per arm to read.",
+    "employee_bands": {
+      "Starter":    { "min": 8,    "max": 99,    "log_mu": 3.60, "log_sigma": 0.60 },
+      "Growth":     { "min": 100,  "max": 999,   "log_mu": 5.70, "log_sigma": 0.55 },
+      "Enterprise": { "min": 1000, "max": 45000, "log_mu": 7.90, "log_sigma": 0.85 }
+    },
+    "misclassification_rate": 0.12,
+    "misclassification_note": "Share of accounts whose headcount sits in a neighbouring band to their contracted tier - reflects real-world sales judgement and creates genuine tier-migration signal for Phase 2."
+  },
+  "industries": [
+    "FinTech",
+    "Logistics & Supply Chain",
+    "Healthcare & Life Sciences",
+    "Manufacturing",
+    "Retail & E-commerce",
+    "Professional Services",
+    "Energy & Utilities",
+    "Media & Telco",
+    "Mobility & Automotive",
+    "Public Sector"
+  ],
+  "regions": [
+    { "name": "DACH", "weight": 0.30, "legal_suffix": "GmbH" },
+    { "name": "Nordics", "weight": 0.14, "legal_suffix": "AB" },
+    { "name": "UK & Ireland", "weight": 0.18, "legal_suffix": "Ltd" },
+    { "name": "Benelux", "weight": 0.13, "legal_suffix": "B.V." },
+    { "name": "Southern Europe", "weight": 0.15, "legal_suffix": "S.L." },
+    { "name": "CEE", "weight": 0.10, "legal_suffix": "Sp. z o.o." }
+  ]
+}

@@ -1,0 +1,826 @@
+{
+  "spec_version": "1.0.0",
+  "project": "RevYield - B2B Pricing Elasticity & Revenue Optimization Engine",
+  "document_type": "implementation_specification",
+
+  "_readme": [
+    "This is an implementation SPECIFICATION, not a Make.com blueprint export.",
+    "A blueprint export embeds account-scoped connection IDs, module UUIDs and an",
+    "internal schema version; publishing one would either leak credentials or ship a",
+    "file that silently fails to import. Every connection below is a placeholder of",
+    "the form {{CONN_*}} and must be bound in the Make UI.",
+    "",
+    "Multi-line SQL and payload bodies are expressed as arrays of strings. Join with",
+    "'\\n' to reconstruct. Every SQL block here parses against the PostgreSQL 16",
+    "grammar and runs against the schema in data/schema.sql."
+  ],
+
+  "platform_constraints": {
+    "_note": "These are the reasons the design looks the way it does. All four tiers are free.",
+    "make_com_free": {
+      "operations_per_month": 1000,
+      "minimum_schedule_interval_minutes": 15,
+      "consequence": [
+        "Polling every 15 minutes would burn 2,880 trigger operations a month before",
+        "a single deal is processed - roughly 3x the entire free allowance. Scenario 1",
+        "therefore polls hourly during business hours only, and Scenario 2 runs once",
+        "daily. Measured budget is in operations_budget below."
+      ]
+    },
+    "hubspot_free_crm": {
+      "webhooks_available": false,
+      "workflows_available": false,
+      "private_apps_available": true,
+      "consequence": [
+        "The HubSpot Webhooks API requires a public app in a developer account, and",
+        "workflow-triggered webhooks require Operations Hub. Neither is free. The",
+        "trigger is therefore a poll against the CRM Search API filtered on",
+        "hs_lastmodifieddate, which a free-tier private app can do."
+      ],
+      "api_rate_limit": "100 requests / 10 seconds per private app"
+    },
+    "neon_free": {
+      "storage_gb": 0.5,
+      "autosuspend": "compute scales to zero when idle",
+      "consequence": [
+        "The first query after idle pays a cold-start of roughly 500ms. Scenario 2",
+        "issues one query returning many rows rather than one query per account."
+      ]
+    },
+    "google_sheets": {
+      "cells_per_spreadsheet": 10000000,
+      "consequence": "Append-only logs; rotate the exception log annually."
+    }
+  },
+
+  "connections": {
+    "_note": "Bind these in the Make UI. Never commit real IDs.",
+    "hubspot": "{{CONN_HUBSPOT_PRIVATE_APP}}",
+    "postgres_neon": "{{CONN_NEON_POSTGRES}}",
+    "google_sheets": "{{CONN_GOOGLE_SHEETS}}"
+  },
+
+  "hubspot_setup": {
+    "private_app_scopes": [
+      "crm.objects.deals.read",
+      "crm.objects.deals.write",
+      "crm.objects.companies.read",
+      "crm.schemas.deals.read"
+    ],
+    "custom_deal_properties": {
+      "_note": [
+        "HubSpot's default deal object carries dealname, amount, dealstage, pipeline,",
+        "closedate and dealtype. Everything the margin calculation needs beyond that",
+        "has to be created. POST each object below to the endpoint in",
+        "property_creation_request. 'amount' is mapped to realized_price, so no custom",
+        "property is created for it."
+      ],
+      "endpoint": "POST https://api.hubapi.com/crm/v3/properties/deals",
+      "properties": [
+        {
+          "name": "revyield_contract_tier",
+          "label": "Contract Tier",
+          "type": "enumeration",
+          "fieldType": "select",
+          "groupName": "dealinformation",
+          "options": [
+            { "label": "Starter", "value": "Starter", "displayOrder": 0 },
+            { "label": "Growth", "value": "Growth", "displayOrder": 1 },
+            { "label": "Enterprise", "value": "Enterprise", "displayOrder": 2 }
+          ]
+        },
+        {
+          "name": "revyield_contracted_seats",
+          "label": "Contracted Seats",
+          "type": "number",
+          "fieldType": "number",
+          "groupName": "dealinformation"
+        },
+        {
+          "name": "revyield_list_price",
+          "label": "Annual List Price (full contracted volume)",
+          "type": "number",
+          "fieldType": "number",
+          "groupName": "dealinformation"
+        },
+        {
+          "name": "revyield_unit_cost",
+          "label": "Annualised Cost to Serve",
+          "type": "number",
+          "fieldType": "number",
+          "groupName": "dealinformation"
+        },
+        {
+          "name": "revyield_contract_term_months",
+          "label": "Contract Term (months)",
+          "type": "number",
+          "fieldType": "number",
+          "groupName": "dealinformation"
+        },
+        {
+          "name": "revyield_pricing_variant",
+          "label": "Pricing Variant",
+          "type": "enumeration",
+          "fieldType": "select",
+          "groupName": "dealinformation",
+          "options": [
+            { "label": "Control (legacy card)", "value": "control", "displayOrder": 0 },
+            { "label": "Test (FY26-H1 uplift)", "value": "test", "displayOrder": 1 },
+            { "label": "Not in test (grandfathered)", "value": "not_in_test", "displayOrder": 2 }
+          ]
+        },
+        {
+          "name": "revyield_gross_margin_pct",
+          "label": "Realized Gross Margin %",
+          "type": "number",
+          "fieldType": "number",
+          "groupName": "dealinformation",
+          "_written_by": "Scenario 1, module 5"
+        },
+        {
+          "name": "revyield_approval_band",
+          "label": "Discount Approval Required",
+          "type": "enumeration",
+          "fieldType": "select",
+          "groupName": "dealinformation",
+          "options": [
+            { "label": "Account Executive", "value": "Account Executive", "displayOrder": 0 },
+            { "label": "Sales Manager", "value": "Sales Manager", "displayOrder": 1 },
+            { "label": "VP Revenue", "value": "VP Revenue", "displayOrder": 2 },
+            { "label": "CFO", "value": "CFO", "displayOrder": 3 }
+          ],
+          "_written_by": "Scenario 1, module 5"
+        },
+        {
+          "name": "revyield_margin_flag",
+          "label": "Margin Floor Breach",
+          "type": "enumeration",
+          "fieldType": "booleancheckbox",
+          "groupName": "dealinformation",
+          "options": [
+            { "label": "Yes", "value": "true", "displayOrder": 0 },
+            { "label": "No", "value": "false", "displayOrder": 1 }
+          ],
+          "_written_by": "Scenario 1, module 5"
+        }
+      ]
+    }
+  },
+
+  "field_mapping": {
+    "_note": [
+      "HubSpot deal -> fact_transactions. The warehouse column list is deliberately",
+      "short: discount_pct, gross_margin, gross_margin_pct, realized_price_per_seat,",
+      "list_price_per_seat and mrr are GENERATED columns in data/schema.sql and must",
+      "never appear in an INSERT. That is the whole point of putting them in the DDL -",
+      "Power BI, ad-hoc SQL and this pipeline cannot drift from one another."
+    ],
+    "columns": [
+      { "warehouse": "deal_id", "hubspot": "hs_object_id", "transform": "'HS-' || hs_object_id", "key": true },
+      { "warehouse": "account_id", "hubspot": "associations.companies[0]", "transform": "resolve via module 3" },
+      { "warehouse": "contract_tier", "hubspot": "revyield_contract_tier", "transform": "direct" },
+      { "warehouse": "deal_type", "hubspot": "dealtype", "transform": "deal_type_map" },
+      { "warehouse": "deal_stage", "hubspot": "dealstage", "transform": "deal_stage_map" },
+      { "warehouse": "pricing_variant", "hubspot": "revyield_pricing_variant", "transform": "direct, default 'not_in_test'" },
+      { "warehouse": "contracted_seats", "hubspot": "revyield_contracted_seats", "transform": "toNumber" },
+      { "warehouse": "list_price", "hubspot": "revyield_list_price", "transform": "toNumber" },
+      { "warehouse": "realized_price", "hubspot": "amount", "transform": "toNumber - HubSpot 'amount' IS the booked ACV" },
+      { "warehouse": "unit_cost", "hubspot": "revyield_unit_cost", "transform": "toNumber" },
+      { "warehouse": "win_probability", "hubspot": "dealstage", "transform": "stage_probability_map" },
+      { "warehouse": "contract_term_months", "hubspot": "revyield_contract_term_months", "transform": "toNumber, default 12" },
+      { "warehouse": "contract_start_date", "hubspot": "closedate", "transform": "closed_won ? date(closedate) : null" },
+      { "warehouse": "contract_end_date", "hubspot": "closedate", "transform": "closed_won ? date(closedate) + term months : null" },
+      { "warehouse": "close_date", "hubspot": "closedate", "transform": "date(closedate)" }
+    ],
+    "deal_stage_map": {
+      "_note": "Keys are HubSpot's default sales pipeline stage IDs.",
+      "closedwon": "closed_won",
+      "closedlost": "closed_lost",
+      "appointmentscheduled": "open",
+      "qualifiedtobuy": "open",
+      "presentationscheduled": "open",
+      "decisionmakerboughtin": "open",
+      "contractsent": "open"
+    },
+    "stage_probability_map": {
+      "_note": [
+        "ck_txn_prob_settled in data/schema.sql requires win_probability to be exactly",
+        "1 for closed_won and exactly 0 for closed_lost. Only open deals may carry a",
+        "genuine forecast weight. These values are HubSpot's own stage defaults."
+      ],
+      "appointmentscheduled": 0.2,
+      "qualifiedtobuy": 0.4,
+      "presentationscheduled": 0.6,
+      "decisionmakerboughtin": 0.8,
+      "contractsent": 0.9,
+      "closedwon": 1.0,
+      "closedlost": 0.0
+    },
+    "deal_type_map": {
+      "newbusiness": "new_business",
+      "existingbusiness": "expansion",
+      "_default": "new_business",
+      "_note": "HubSpot ships only newbusiness/existingbusiness. 'renewal' and 'upgrade' require custom options; without them the warehouse sees expansion."
+    },
+    "constraint_contract": {
+      "_note": [
+        "The database constraints ARE the integration contract. Rather than validating",
+        "in Make and hoping, the pipeline maps deliberately and lets Postgres reject",
+        "anything malformed into the error branch.",
+        "",
+        "ck_txn_contract     won deals must carry both contract dates; lost and open must carry neither",
+        "ck_txn_prob_settled closed deals carry probability exactly 1 or 0",
+        "ck_txn_discount     realized_price <= list_price",
+        "ck_txn_prices       list_price > 0, realized_price > 0, unit_cost >= 0",
+        "ck_txn_seats        contracted_seats > 0",
+        "fk account_id       the company must already exist in dim_accounts"
+      ]
+    }
+  },
+
+  "derived_metrics": {
+    "_note": [
+      "Computed in Make only to decide whether to flag the deal and what to write back",
+      "to HubSpot. They are NOT written to Neon - the generated columns recompute them",
+      "on insert. Formulas are identical to data/schema.sql by construction."
+    ],
+    "discount_pct": "(list_price - realized_price) / list_price",
+    "gross_margin": "realized_price - unit_cost",
+    "gross_margin_pct": "(realized_price - unit_cost) / realized_price",
+    "realized_price_per_seat": "realized_price / contracted_seats",
+    "mrr": "realized_price / 12",
+    "approval_band": {
+      "_source": "data/pricing_rules.json -> discount_governance.approval_bands",
+      "rule": "first band whose max_discount_pct >= discount_pct",
+      "bands": [
+        { "max_discount_pct": 0.10, "approver": "Account Executive" },
+        { "max_discount_pct": 0.20, "approver": "Sales Manager" },
+        { "max_discount_pct": 0.30, "approver": "VP Revenue" },
+        { "max_discount_pct": 1.00, "approver": "CFO" }
+      ]
+    },
+    "margin_floor_breach": {
+      "_source": "data/pricing_rules.json -> discount_governance.floor_margin_pct",
+      "rule": "gross_margin_pct < 0.45",
+      "_note": "Escalates regardless of headline discount. A deal can sit inside its discount band and still be below floor if the cost to serve is heavy."
+    }
+  },
+
+  "scenarios": [
+    {
+      "id": 1,
+      "name": "RevYield · Deal Margin Guard",
+      "purpose": "When a deal moves in HubSpot, price it, flag it if it breaches discount governance or the margin floor, log the exception, and keep the warehouse in step.",
+      "schedule": {
+        "type": "interval",
+        "minutes": 60,
+        "restrict_to": { "days": ["mon", "tue", "wed", "thu", "fri"], "between": ["07:00", "19:00"], "timezone": "Europe/Berlin" },
+        "_rationale": "Hourly on business days = 12 x 22 = 264 trigger operations a month. Every 15 minutes would be 2,880 and blow the free tier on its own."
+      },
+      "modules": [
+        {
+          "id": 1,
+          "module": "hubspot:searchDeals",
+          "label": "Watch modified deals",
+          "type": "trigger",
+          "request": {
+            "method": "POST",
+            "url": "https://api.hubapi.com/crm/v3/objects/deals/search",
+            "body": {
+              "filterGroups": [
+                {
+                  "filters": [
+                    { "propertyName": "hs_lastmodifieddate", "operator": "GT", "value": "{{last_run_epoch_ms}}" },
+                    { "propertyName": "amount", "operator": "HAS_PROPERTY" }
+                  ]
+                }
+              ],
+              "properties": [
+                "hs_object_id", "dealname", "amount", "dealstage", "dealtype", "closedate",
+                "revyield_contract_tier", "revyield_contracted_seats", "revyield_list_price",
+                "revyield_unit_cost", "revyield_contract_term_months", "revyield_pricing_variant"
+              ],
+              "sorts": [{ "propertyName": "hs_lastmodifieddate", "direction": "ASCENDING" }],
+              "limit": 100
+            }
+          },
+          "output": "collection of deals"
+        },
+        {
+          "id": 2,
+          "module": "builtin:filter",
+          "label": "Priceable deals only",
+          "condition": [
+            "revyield_contracted_seats > 0",
+            "AND revyield_list_price > 0",
+            "AND amount > 0",
+            "AND revyield_contract_tier IS NOT EMPTY"
+          ],
+          "_rationale": "Stops half-filled deals reaching the warehouse and failing ck_txn_prices, which would push a recoverable data-entry gap into the error branch."
+        },
+        {
+          "id": 3,
+          "module": "hubspot:getAssociations",
+          "label": "Resolve company -> account_id",
+          "request": {
+            "method": "GET",
+            "url": "https://api.hubapi.com/crm/v4/objects/deals/{{1.hs_object_id}}/associations/companies"
+          },
+          "then": {
+            "module": "postgres:select",
+            "connection": "{{CONN_NEON_POSTGRES}}",
+            "sql": [
+              "SELECT account_id, current_tier, company_name",
+              "FROM dim_accounts",
+              "WHERE company_name = $1"
+            ],
+            "values": ["{{3.company.properties.name}}"],
+            "on_empty": "route to error branch 'unknown_account' - never invent an account_id, the FK will reject it anyway"
+          }
+        },
+        {
+          "id": 4,
+          "module": "postgres:select",
+          "label": "Load tier economics",
+          "connection": "{{CONN_NEON_POSTGRES}}",
+          "sql": [
+            "SELECT annual_list_price_per_seat,",
+            "       annual_cost_per_seat,",
+            "       target_gross_margin_pct,",
+            "       capacity_threshold_pct",
+            "FROM dim_tier_entitlements",
+            "WHERE contract_tier = $1"
+          ],
+          "values": ["{{1.revyield_contract_tier}}"],
+          "_rationale": "The rate card lives in the database, so Make never carries a hard-coded price. Repricing the book means one UPDATE, not editing a scenario."
+        },
+        {
+          "id": 5,
+          "module": "builtin:setVariables",
+          "label": "Margin calculation",
+          "variables": {
+            "discount_pct": "({{1.revyield_list_price}} - {{1.amount}}) / {{1.revyield_list_price}}",
+            "gross_margin": "{{1.amount}} - {{1.revyield_unit_cost}}",
+            "gross_margin_pct": "({{1.amount}} - {{1.revyield_unit_cost}}) / {{1.amount}}",
+            "realized_price_per_seat": "{{1.amount}} / {{1.revyield_contracted_seats}}",
+            "mrr": "{{1.amount}} / 12",
+            "approval_band": "if(discount_pct <= 0.10; 'Account Executive'; if(discount_pct <= 0.20; 'Sales Manager'; if(discount_pct <= 0.30; 'VP Revenue'; 'CFO')))",
+            "margin_floor_breach": "gross_margin_pct < 0.45",
+            "off_rate_card": "abs(realized_price_per_seat - {{4.annual_list_price_per_seat}}) / {{4.annual_list_price_per_seat}} > 0.35",
+            "deal_stage_mapped": "get(deal_stage_map; {{1.dealstage}})",
+            "win_probability": "get(stage_probability_map; {{1.dealstage}})"
+          }
+        },
+        {
+          "id": 6,
+          "module": "hubspot:updateDeal",
+          "label": "Write economics back to the deal",
+          "request": {
+            "method": "PATCH",
+            "url": "https://api.hubapi.com/crm/v3/objects/deals/{{1.hs_object_id}}",
+            "body": {
+              "properties": {
+                "revyield_gross_margin_pct": "{{round(5.gross_margin_pct * 100; 2)}}",
+                "revyield_approval_band": "{{5.approval_band}}",
+                "revyield_margin_flag": "{{5.margin_floor_breach}}"
+              }
+            }
+          },
+          "_rationale": "The rep sees the approver they need before they send the quote, not after finance rejects it."
+        },
+        {
+          "id": 7,
+          "module": "builtin:router",
+          "label": "Exception routing",
+          "routes": [
+            {
+              "name": "Exception",
+              "condition": "{{5.margin_floor_breach}} = true OR {{5.discount_pct}} > 0.20 OR {{5.off_rate_card}} = true",
+              "continues_to": [8, 9]
+            },
+            { "name": "Clean", "condition": "otherwise", "continues_to": [9] }
+          ]
+        },
+        {
+          "id": 8,
+          "module": "google-sheets:addRow",
+          "label": "Append to Pricing Exceptions log",
+          "connection": "{{CONN_GOOGLE_SHEETS}}",
+          "spreadsheet": "{{SHEET_REVYIELD_OPS}}",
+          "sheet": "pricing_exceptions",
+          "request": {
+            "method": "POST",
+            "url": "https://sheets.googleapis.com/v4/spreadsheets/{{SHEET_REVYIELD_OPS}}/values/pricing_exceptions!A:M:append",
+            "query": { "valueInputOption": "RAW", "insertDataOption": "INSERT_ROWS" },
+            "body": {
+              "values": [[
+                "{{formatDate(now; 'YYYY-MM-DD HH:mm')}}",
+                "{{1.hs_object_id}}",
+                "{{1.dealname}}",
+                "{{3.account_id}}",
+                "{{1.revyield_contract_tier}}",
+                "{{1.dealstage}}",
+                "{{1.revyield_contracted_seats}}",
+                "{{1.revyield_list_price}}",
+                "{{1.amount}}",
+                "{{round(5.discount_pct * 100; 2)}}",
+                "{{round(5.gross_margin_pct * 100; 2)}}",
+                "{{5.approval_band}}",
+                "{{if(5.margin_floor_breach; 'MARGIN FLOOR BREACH'; 'discount band')}}"
+              ]]
+            }
+          }
+        },
+        {
+          "id": 9,
+          "module": "postgres:query",
+          "label": "Upsert the deal ledger",
+          "connection": "{{CONN_NEON_POSTGRES}}",
+          "sql": [
+            "INSERT INTO fact_transactions (",
+            "    account_id, deal_id, contract_tier, deal_type, deal_stage, pricing_variant,",
+            "    contracted_seats, list_price, realized_price, unit_cost, win_probability,",
+            "    contract_term_months, contract_start_date, contract_end_date, close_date",
+            ")",
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+            "ON CONFLICT (deal_id) DO UPDATE SET",
+            "    contract_tier        = EXCLUDED.contract_tier,",
+            "    deal_type            = EXCLUDED.deal_type,",
+            "    deal_stage           = EXCLUDED.deal_stage,",
+            "    pricing_variant      = EXCLUDED.pricing_variant,",
+            "    contracted_seats     = EXCLUDED.contracted_seats,",
+            "    list_price           = EXCLUDED.list_price,",
+            "    realized_price       = EXCLUDED.realized_price,",
+            "    unit_cost            = EXCLUDED.unit_cost,",
+            "    win_probability      = EXCLUDED.win_probability,",
+            "    contract_term_months = EXCLUDED.contract_term_months,",
+            "    contract_start_date  = EXCLUDED.contract_start_date,",
+            "    contract_end_date    = EXCLUDED.contract_end_date,",
+            "    close_date           = EXCLUDED.close_date",
+            "WHERE fact_transactions.deal_stage <> 'closed_won'",
+            "   OR EXCLUDED.deal_stage = 'closed_won'"
+          ],
+          "values": [
+            "{{3.account_id}}", "HS-{{1.hs_object_id}}", "{{1.revyield_contract_tier}}",
+            "{{5.deal_type_mapped}}", "{{5.deal_stage_mapped}}", "{{1.revyield_pricing_variant}}",
+            "{{1.revyield_contracted_seats}}", "{{1.revyield_list_price}}", "{{1.amount}}",
+            "{{1.revyield_unit_cost}}", "{{5.win_probability}}", "{{1.revyield_contract_term_months}}",
+            "{{5.contract_start_date}}", "{{5.contract_end_date}}", "{{5.close_date}}"
+          ],
+          "_notes": [
+            "Placeholders use PostgreSQL's native $n form, which is unambiguous about",
+            "ordering. Client libraries differ: Make's PostgreSQL module and JDBC bind an",
+            "ordered array against '?', psycopg parses '%s'. Substitute positionally to",
+            "match your module - but bind, never interpolate. dealname is free text and is",
+            "attacker-controlled in any org that accepts inbound leads.",
+            "",
+            "The trailing WHERE stops a stale poll from dragging a closed-won deal back",
+            "to open. HubSpot can legitimately reopen a deal, but that should be a",
+            "deliberate correction, not a race between two scenario runs.",
+            "",
+            "No generated column appears in the column list. Postgres recomputes",
+            "discount_pct, gross_margin, gross_margin_pct, realized_price_per_seat,",
+            "list_price_per_seat and mrr, which is why Make's arithmetic in module 5",
+            "can never disagree with Power BI."
+          ]
+        }
+      ],
+      "operations_budget": {
+        "_method": "Make bills one operation per module execution. Filters and routers are free. Billable per deal: 3 (associations + company lookup), 4, 5, 6, 9 = 6.",
+        "trigger_runs_per_month": 264,
+        "average_deals_touched_per_month": 45,
+        "billable_modules_per_deal": 6,
+        "exception_rows_per_month": 12,
+        "estimated_operations": 546,
+        "_arithmetic": "264 + (45 x 6) + 12 = 546"
+      }
+    },
+
+    {
+      "id": 2,
+      "name": "RevYield · Usage Threshold Sweep",
+      "purpose": "Each morning, find accounts that have been over their contracted capacity for two consecutive months, open an expansion deal for the ones with nothing in flight, and publish the worklist.",
+      "schedule": {
+        "type": "cron",
+        "expression": "0 6 * * 1-5",
+        "timezone": "Europe/Berlin",
+        "_rationale": "One run per business day. The sweep reads a monthly snapshot, so anything more frequent re-reads identical data at real operational cost."
+      },
+      "modules": [
+        {
+          "id": 1,
+          "module": "postgres:select",
+          "label": "Expansion-ready accounts",
+          "connection": "{{CONN_NEON_POSTGRES}}",
+          "_note": "The operational subset of sql/02_tier_expansion.sql - same thresholds, same sustained-breach rule, trimmed to what the automation acts on.",
+          "sql": [
+            "WITH as_of AS (",
+            "    SELECT MAX(recorded_date) AS d FROM fact_usage_metrics",
+            "),",
+            "live AS (",
+            "    SELECT t.account_id,",
+            "           SUM(t.realized_price)   AS current_acv,",
+            "           SUM(t.contracted_seats) AS contracted_seats",
+            "    FROM fact_transactions AS t",
+            "    CROSS JOIN as_of",
+            "    WHERE t.deal_stage = 'closed_won'",
+            "      AND t.contract_start_date <= as_of.d",
+            "      AND t.contract_end_date   >  as_of.d",
+            "    GROUP BY t.account_id",
+            "),",
+            "scored AS (",
+            "    SELECT u.account_id,",
+            "           a.company_name,",
+            "           a.current_tier,",
+            "           a.region,",
+            "           u.recorded_date,",
+            "           u.active_seats,",
+            "           l.contracted_seats,",
+            "           l.current_acv,",
+            "           e.annual_list_price_per_seat,",
+            "           e.capacity_threshold_pct,",
+            "           ( 0.45 * u.active_seats::numeric    / l.contracted_seats",
+            "           + 0.30 * u.api_calls_count::numeric / e.included_api_calls",
+            "           + 0.25 * u.storage_gb               / e.included_storage_gb ) AS score,",
+            "           COUNT(*)     OVER (PARTITION BY u.account_id) AS months_observed,",
+            "           ROW_NUMBER() OVER (PARTITION BY u.account_id",
+            "                              ORDER BY u.recorded_date DESC) AS rn",
+            "    FROM fact_usage_metrics    AS u",
+            "    JOIN dim_accounts          AS a ON a.account_id    = u.account_id",
+            "    JOIN dim_tier_entitlements AS e ON e.contract_tier = a.current_tier",
+            "    JOIN live                  AS l ON l.account_id    = u.account_id",
+            "    WHERE a.account_status = 'active'",
+            "),",
+            "sustained AS (",
+            "    SELECT account_id",
+            "    FROM scored",
+            "    WHERE rn <= 2",
+            "    GROUP BY account_id",
+            "    HAVING COUNT(*) = 2",
+            "       AND MIN(score) >= MIN(capacity_threshold_pct)",
+            ")",
+            "SELECT s.account_id,",
+            "       s.company_name,",
+            "       s.current_tier,",
+            "       s.region,",
+            "       s.recorded_date,",
+            "       s.active_seats,",
+            "       s.contracted_seats,",
+            "       GREATEST(s.active_seats - s.contracted_seats, 0) AS seats_over_contracted,",
+            "       ROUND(s.score * 100, 1)                          AS utilisation_pct,",
+            "       ROUND(s.current_acv, 2)                          AS current_acv,",
+            "       ROUND(GREATEST(s.active_seats - s.contracted_seats, 0)",
+            "             * s.annual_list_price_per_seat, 2)         AS expansion_acv_opportunity",
+            "FROM scored AS s",
+            "JOIN sustained AS x ON x.account_id = s.account_id",
+            "WHERE s.rn = 1",
+            "  AND s.months_observed >= 4",
+            "  AND s.active_seats > s.contracted_seats",
+            "ORDER BY expansion_acv_opportunity DESC",
+            "LIMIT $1"
+          ],
+          "values": ["25"],
+          "_notes": [
+            "LIMIT is a cost control, not an analytical choice. sql/02 returns the whole",
+            "ranked book for reporting; the automation only opens deals for the top slice",
+            "an AE team can actually work in a day.",
+            "",
+            "months_observed >= 4 mirrors sql/02 exactly, and is load-bearing: without it",
+            "the sweep opens deals on accounts whose entire history is the two months of",
+            "the breach itself, where there is no trend to speak of - only noise. This",
+            "guard is what makes the result set a true subset of sql/02.",
+            "",
+            "Only seat overage is returned. The rate card in data/pricing_rules.json sells",
+            "seats and nothing else, so an account over its API or storage pool is a",
+            "conversation for sql/02's report, not an auto-created deal with a number on it."
+          ]
+        },
+        {
+          "id": 2,
+          "module": "hubspot:searchDeals",
+          "label": "Fetch ALL open expansion deals (one call)",
+          "request": {
+            "method": "POST",
+            "url": "https://api.hubapi.com/crm/v3/objects/deals/search",
+            "body": {
+              "filterGroups": [
+                {
+                  "filters": [
+                    { "propertyName": "dealtype", "operator": "EQ", "value": "existingbusiness" },
+                    { "propertyName": "hs_is_closed", "operator": "EQ", "value": "false" }
+                  ]
+                }
+              ],
+              "properties": ["hs_object_id", "dealname", "createdate"],
+              "limit": 100
+            }
+          },
+          "_rationale": [
+            "Suppression stops the sweep re-opening the same deal every morning until",
+            "someone closes it, and it checks HubSpot rather than a local table so a deal",
+            "a rep created by hand also counts as in-flight.",
+            "",
+            "The obvious implementation - search HubSpot once per candidate - is an N+1.",
+            "At LIMIT 25 that is 25 operations per run, 550 a month, which together with",
+            "Scenario 1 exceeds the entire free-tier allowance. Fetching the open-deal set",
+            "in a single call and matching in memory costs 1 operation instead of 25.",
+            "The open expansion pipeline is far below the 100-record page size; if it ever",
+            "approaches it, paginate here rather than reverting to per-candidate search."
+          ]
+        },
+        {
+          "id": 3,
+          "module": "builtin:arrayAggregator",
+          "label": "Build the in-flight name set",
+          "source": "{{2.results}}",
+          "expression": "map(2.results; dealname)"
+        },
+        {
+          "id": 4,
+          "module": "builtin:iterator",
+          "label": "Iterate candidate accounts",
+          "source": "{{1.rows}}"
+        },
+        {
+          "id": 5,
+          "module": "builtin:filter",
+          "label": "No open expansion deal exists",
+          "condition": "NOT contains({{3.array}}; {{4.company_name}})",
+          "_note": "Filters do not consume a Make operation, so the whole suppression step costs 2 operations per run regardless of how many candidates it screens."
+        },
+        {
+          "id": 6,
+          "module": "hubspot:createDeal",
+          "label": "Open the expansion deal",
+          "request": {
+            "method": "POST",
+            "url": "https://api.hubapi.com/crm/v3/objects/deals",
+            "body": {
+              "properties": {
+                "dealname": "{{4.company_name}} - seat expansion ({{4.seats_over_contracted}} seats)",
+                "pipeline": "default",
+                "dealstage": "qualifiedtobuy",
+                "dealtype": "existingbusiness",
+                "amount": "{{4.expansion_acv_opportunity}}",
+                "closedate": "{{addDays(now; 45)}}",
+                "revyield_contract_tier": "{{4.current_tier}}",
+                "revyield_contracted_seats": "{{4.seats_over_contracted}}",
+                "revyield_pricing_variant": "not_in_test"
+              },
+              "associations": [
+                {
+                  "to": { "id": "{{4.hubspot_company_id}}" },
+                  "types": [{ "associationCategory": "HUBSPOT_DEFINED", "associationTypeId": 5 }]
+                }
+              ]
+            }
+          },
+          "_notes": [
+            "Created at qualifiedtobuy, not appointmentscheduled: usage evidence is a",
+            "stronger qualification signal than a booked meeting, and the stage drives",
+            "the 0.4 forecast weight that reaches Weighted Pipeline Forecast in Power BI.",
+            "",
+            "pricing_variant is 'not_in_test'. Auto-generated expansion deals were never",
+            "part of the FY26-H1 randomisation, and letting them inherit an arm would",
+            "quietly contaminate sql/01."
+          ]
+        },
+        {
+          "id": 7,
+          "module": "google-sheets:addRow",
+          "label": "Publish the worklist",
+          "connection": "{{CONN_GOOGLE_SHEETS}}",
+          "spreadsheet": "{{SHEET_REVYIELD_OPS}}",
+          "sheet": "expansion_pipeline",
+          "request": {
+            "method": "POST",
+            "url": "https://sheets.googleapis.com/v4/spreadsheets/{{SHEET_REVYIELD_OPS}}/values/expansion_pipeline!A:K:append",
+            "query": { "valueInputOption": "RAW", "insertDataOption": "INSERT_ROWS" },
+            "body": {
+              "values": [[
+                "{{formatDate(now; 'YYYY-MM-DD')}}",
+                "{{4.account_id}}",
+                "{{4.company_name}}",
+                "{{4.region}}",
+                "{{4.current_tier}}",
+                "{{4.contracted_seats}}",
+                "{{4.active_seats}}",
+                "{{4.seats_over_contracted}}",
+                "{{4.utilisation_pct}}",
+                "{{4.expansion_acv_opportunity}}",
+                "{{6.id}}"
+              ]]
+            }
+          }
+        }
+      ],
+      "operations_budget": {
+        "_method": "Make bills one operation per module execution. Filters and routers are free. Modules 1-4 run once per scenario run; modules 6-7 run once per account that clears suppression.",
+        "runs_per_month": 22,
+        "fixed_modules_per_run": 4,
+        "accounts_clearing_suppression_per_run": 3,
+        "billable_modules_per_account": 2,
+        "estimated_operations": 220,
+        "_arithmetic": "22 x (4 + 3 x 2) = 220"
+      }
+    }
+  ],
+
+  "operations_budget_total": {
+    "_note": [
+      "Make's free tier allows 1,000 operations a month. This is the binding constraint",
+      "on the whole design and every scheduling decision above traces back to it.",
+      "",
+      "The figure below is what makes the cadences defensible. An earlier draft polled",
+      "HubSpot once per candidate for duplicate suppression; that single N+1 pushed the",
+      "total to roughly 1,270 and would have silently stalled both scenarios partway",
+      "through the month."
+    ],
+    "scenario_1_deal_margin_guard": 546,
+    "scenario_2_usage_threshold_sweep": 220,
+    "total": 766,
+    "free_tier_allowance": 1000,
+    "headroom_pct": 23.4,
+    "first_lever_if_exceeded": "Drop Scenario 1 polling from hourly to every two hours (-132 operations). Widening the sweep's LIMIT costs nothing, because suppression is batched."
+  },
+
+  "google_sheets_schema": {
+    "spreadsheet_placeholder": "{{SHEET_REVYIELD_OPS}}",
+    "tabs": {
+      "pricing_exceptions": {
+        "columns": [
+          "logged_at", "hubspot_deal_id", "deal_name", "account_id", "contract_tier",
+          "deal_stage", "contracted_seats", "list_price", "realized_price",
+          "discount_pct", "gross_margin_pct", "approval_band", "exception_reason"
+        ],
+        "purpose": "Standing evidence for the discount-governance review. Deals appear here when they breach the margin floor, exceed a 20% discount, or sit more than 35% off the rate card."
+      },
+      "expansion_pipeline": {
+        "columns": [
+          "detected_on", "account_id", "company_name", "region", "contract_tier",
+          "contracted_seats", "active_seats", "seats_over_contracted",
+          "utilisation_pct", "expansion_acv_opportunity", "hubspot_deal_id"
+        ],
+        "purpose": "The AE worklist, and the audit trail proving an auto-created deal came from sustained usage rather than a hunch."
+      }
+    }
+  },
+
+  "error_handling": {
+    "policy": "Every write module carries an error handler. Silent failure in a pipeline that feeds pricing decisions is worse than a loud stop.",
+    "routes": [
+      {
+        "name": "unknown_account",
+        "trigger": "module 3 returns no dim_accounts row",
+        "directive": "break",
+        "action": "Log to pricing_exceptions with reason 'unknown_account'; do not insert. The FK on fact_transactions.account_id would reject it regardless."
+      },
+      {
+        "name": "constraint_violation",
+        "trigger": "Postgres error class 23xxx from module 9",
+        "directive": "break",
+        "action": "Store the bundle for manual replay and log the constraint name. A 23514 names the CHECK that fired, which points straight at the offending field."
+      },
+      {
+        "name": "hubspot_rate_limit",
+        "trigger": "HTTP 429",
+        "directive": "retry",
+        "backoff": { "attempts": 3, "interval_seconds": 20, "strategy": "exponential" }
+      },
+      {
+        "name": "neon_cold_start",
+        "trigger": "connection timeout on first query after idle",
+        "directive": "retry",
+        "backoff": { "attempts": 2, "interval_seconds": 5 },
+        "_note": "Neon scales compute to zero. The first query after idle can exceed a default timeout; the second reliably succeeds."
+      }
+    ],
+    "idempotency": [
+      "Scenario 1 is idempotent through ON CONFLICT (deal_id). Replaying a bundle updates the row rather than duplicating it.",
+      "Scenario 2 is idempotent through the module 3 suppression search, not through the database - it creates CRM objects, which have no natural key to conflict on."
+    ]
+  },
+
+  "security": {
+    "credentials": "Bound in the Make UI only. No token, connection ID or spreadsheet ID appears in this repository.",
+    "sql_injection": "All warehouse writes use positional binding. Deal names are free text and, in any org accepting inbound leads, attacker-controlled.",
+    "least_privilege": [
+      "The Neon role used by Make needs SELECT on dim_accounts, dim_tier_entitlements and",
+      "fact_usage_metrics, plus INSERT and UPDATE on fact_transactions. It needs no DDL",
+      "rights and no DELETE:",
+      "",
+      "  CREATE ROLE revyield_automation LOGIN PASSWORD '<managed by Neon>';",
+      "  GRANT SELECT ON dim_accounts, dim_tier_entitlements, fact_usage_metrics TO revyield_automation;",
+      "  GRANT SELECT, INSERT, UPDATE ON fact_transactions TO revyield_automation;",
+      "  GRANT USAGE, SELECT ON SEQUENCE fact_transactions_transaction_id_seq TO revyield_automation;"
+    ],
+    "pii": "Company names and deal values only. No personal data leaves HubSpot, so the Google Sheets logs stay outside GDPR personal-data scope."
+  },
+
+  "known_limitations": [
+    "Polling, not push. A deal edited at 09:05 is priced at 10:00. Real-time write-back needs HubSpot webhooks, which need a paid tier or a public developer app.",
+    "Scenario 1 writes straight into fact_transactions. At this volume the constraints are sufficient protection, but a warehouse taking feeds from more than one system should land raw first and transform on the way in.",
+    "The company-name join in module 3 is a string match. It holds because dim_accounts.company_name is UNIQUE and is generated, not typed; a real deployment stores the HubSpot company ID on dim_accounts and joins on that.",
+    "Suppression in Scenario 2 matches on dealname CONTAINS_TOKEN. Two companies with overlapping names could suppress each other; keying on the associated company ID is the correct fix once HubSpot IDs are stored."
+  ]
+}

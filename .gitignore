@@ -1,0 +1,28 @@
+# Credentials — Neon connection strings must never reach GitHub
+.env
+.env.*
+!.env.example
+
+# Generated artefacts
+exports/
+*.csv
+*.pbix.bak
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# Resume source files (personal documents, not part of the deliverable)
+*.pdf
+
+# Local tool state — machine-specific paths, not portable
+.claude/settings.local.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

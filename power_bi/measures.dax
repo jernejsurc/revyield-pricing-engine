@@ -1,0 +1,813 @@
+// =============================================================================
+// RevYield  ·  power_bi/measures.dax
+// Power BI semantic layer for the pricing and revenue model.
+//
+// Paste into Tabular Editor (Advanced Scripting off - these are plain measure
+// definitions), or create each measure by hand in Power BI Desktop. DAX comments
+// survive both routes.
+//
+// -----------------------------------------------------------------------------
+// THE ONE THING THAT WILL BREAK EVERY NUMBER IF YOU GET IT WRONG
+// -----------------------------------------------------------------------------
+// fact_transactions is a DEAL LEDGER, not a revenue table. It holds closed_won,
+// closed_lost and open deals side by side - on the canonical dataset that is
+// 1,993 won, 283 lost and 283 open.
+//
+// So SUM( fact_transactions[realized_price] ) is NOT revenue. It is revenue plus
+// the value of every deal that was lost plus every deal still being negotiated:
+// EUR 48,580,713 against a true booked ACV of EUR 43,679,459, an 11.2% overstatement.
+//
+// The same omission on a weighted forecast is far worse. Closed-won deals carry
+// win_probability = 1 by constraint, so an unfiltered SUMX of price x probability
+// returns EUR 44,752,349 where the real open pipeline is EUR 1,072,890 - wrong by
+// a factor of 42.
+//
+// EVERY revenue, cost, margin or seat measure below filters deal_stage first.
+// The only measures that legitimately read open deals are in section 05.
+//
+// -----------------------------------------------------------------------------
+// MODEL SETUP
+// -----------------------------------------------------------------------------
+// Mark dim_date as the date table (Table tools > Mark as date table > date_key).
+//
+// Relationships - all single-direction, from dimension to fact:
+//   dim_date[date_key]                  1..*  fact_transactions[close_date]
+//   dim_date[date_key]                  1..*  fact_usage_metrics[recorded_date]
+//   dim_accounts[account_id]            1..*  fact_transactions[account_id]
+//   dim_accounts[account_id]            1..*  fact_usage_metrics[account_id]
+//   dim_tier_entitlements[contract_tier] 1..* fact_transactions[contract_tier]
+//
+// dim_tier_entitlements is deliberately NOT related to dim_accounts. Relating it
+// to both dim_accounts[current_tier] and fact_transactions[contract_tier] creates
+// two paths to the fact table and Power BI will reject the model as ambiguous.
+// Where usage has to be compared against tier entitlements, pull the values onto
+// dim_accounts as calculated columns instead:
+//
+//   Included API Calls  = LOOKUPVALUE( dim_tier_entitlements[included_api_calls],
+//                                      dim_tier_entitlements[contract_tier],
+//                                      dim_accounts[current_tier] )
+//   Included Storage GB = LOOKUPVALUE( dim_tier_entitlements[included_storage_gb],
+//                                      dim_tier_entitlements[contract_tier],
+//                                      dim_accounts[current_tier] )
+//
+// Note there is no "Included Seats" column here on purpose. Seats are metered
+// against the seats the account actually BOUGHT (section 06), not against the
+// tier's seat ceiling. See CLAUDE.md.
+//
+// -----------------------------------------------------------------------------
+// COLUMNS THAT ARRIVE PRE-COMPUTED
+// -----------------------------------------------------------------------------
+// discount_pct, gross_margin, gross_margin_pct, realized_price_per_seat,
+// list_price_per_seat and mrr are GENERATED columns in data/schema.sql. Postgres
+// computes them, so Power BI, ad-hoc SQL and the Make.com automation cannot drift.
+//
+// They are row-level values. SUM() over gross_margin is correct; AVERAGE() over
+// gross_margin_pct is NOT - it weights a EUR 4,000 Starter deal the same as a
+// EUR 300,000 Enterprise deal. Always divide the sums.
+// =============================================================================
+
+
+// =============================================================================
+// 01 · BASE  ·  booked economics
+// =============================================================================
+
+Deals =
+COUNTROWS( fact_transactions )
+
+Deals Won =
+CALCULATE( [Deals], fact_transactions[deal_stage] = "closed_won" )
+
+Deals Lost =
+CALCULATE( [Deals], fact_transactions[deal_stage] = "closed_lost" )
+
+Deals Open =
+CALCULATE( [Deals], fact_transactions[deal_stage] = "open" )
+
+// Settled deals only. Counting open deals in the denominator would drag win rate
+// down purely because the quarter is young.
+Win Rate % =
+VAR Settled = [Deals Won] + [Deals Lost]
+RETURN DIVIDE( [Deals Won], Settled )
+
+// realized_price is annualised contract value for the full contracted volume.
+// It IS ACV - not per-seat, not total contract value.
+Booked ACV =
+CALCULATE(
+    SUM( fact_transactions[realized_price] ),
+    fact_transactions[deal_stage] = "closed_won"
+)
+
+Booked List Value =
+CALCULATE(
+    SUM( fact_transactions[list_price] ),
+    fact_transactions[deal_stage] = "closed_won"
+)
+
+Cost to Serve =
+CALCULATE(
+    SUM( fact_transactions[unit_cost] ),
+    fact_transactions[deal_stage] = "closed_won"
+)
+
+Gross Margin =
+CALCULATE(
+    SUM( fact_transactions[gross_margin] ),
+    fact_transactions[deal_stage] = "closed_won"
+)
+
+// The headline margin measure. Ratio of sums, never the average of a ratio.
+Realized Unit Margin % =
+DIVIDE( [Gross Margin], [Booked ACV], 0 )
+
+Contracted Seats =
+CALCULATE(
+    SUM( fact_transactions[contracted_seats] ),
+    fact_transactions[deal_stage] = "closed_won"
+)
+
+Realized Price per Seat =
+DIVIDE( [Booked ACV], [Contracted Seats] )
+
+List Price per Seat =
+DIVIDE( [Booked List Value], [Contracted Seats] )
+
+// Volume-weighted realized discount. A large deal at 25% off should move this
+// more than a small one at 25% off, and dividing the sums is what does that.
+Discount % =
+DIVIDE( [Booked List Value] - [Booked ACV], [Booked List Value], 0 )
+
+Average Deal Size =
+DIVIDE( [Booked ACV], [Deals Won] )
+
+// Distance from the rate card held in dim_tier_entitlements. Useful as a
+// conditional-formatting rule on a deal table: anything beyond +/- 35% is either
+// a data-entry error or a deal nobody reviewed.
+Price Realisation vs Rate Card % =
+VAR CardPrice =
+    CALCULATE(
+        AVERAGE( dim_tier_entitlements[annual_list_price_per_seat] ),
+        REMOVEFILTERS( fact_transactions )
+    )
+RETURN DIVIDE( [Realized Price per Seat], CardPrice ) - 1
+
+
+// =============================================================================
+// 02 · A/B PRICE TEST  ·  FY26-H1 price card uplift
+//
+// Mirrors sql/01_price_elasticity.sql measure for measure.
+//
+// pricing_variant = 'not_in_test' is an explicit exclusion bucket, not missing
+// data: renewals and mid-term upgrades were grandfathered onto the legacy price
+// card. Every measure here filters to control and test only.
+//
+// POST-STRATIFICATION IS NOT OPTIONAL. New-business deals are several times
+// larger than expansion add-ons. A chance imbalance in deal mix between the arms
+// biases a naive tier-level average badly enough to invert the sign of the
+// Starter elasticity - measured at +0.11 against a true -1.65 before this was
+// fixed. Strata are (deal_type) within the current tier context, recombined with
+// control-arm exposure weights.
+// =============================================================================
+
+Experiment Opportunities =
+CALCULATE(
+    [Deals],
+    fact_transactions[pricing_variant] IN { "control", "test" }
+)
+
+Control Opportunities =
+CALCULATE( [Deals], fact_transactions[pricing_variant] = "control" )
+
+Test Opportunities =
+CALCULATE( [Deals], fact_transactions[pricing_variant] = "test" )
+
+Control Deals Won =
+CALCULATE( [Deals Won], fact_transactions[pricing_variant] = "control" )
+
+Test Deals Won =
+CALCULATE( [Deals Won], fact_transactions[pricing_variant] = "test" )
+
+Control Seats =
+CALCULATE( [Contracted Seats], fact_transactions[pricing_variant] = "control" )
+
+Test Seats =
+CALCULATE( [Contracted Seats], fact_transactions[pricing_variant] = "test" )
+
+Control Booked ACV =
+CALCULATE( [Booked ACV], fact_transactions[pricing_variant] = "control" )
+
+Test Booked ACV =
+CALCULATE( [Booked ACV], fact_transactions[pricing_variant] = "test" )
+
+Control Gross Margin =
+CALCULATE( [Gross Margin], fact_transactions[pricing_variant] = "control" )
+
+Test Gross Margin =
+CALCULATE( [Gross Margin], fact_transactions[pricing_variant] = "test" )
+
+Control Price per Seat =
+DIVIDE( [Control Booked ACV], [Control Seats] )
+
+Test Price per Seat =
+DIVIDE( [Test Booked ACV], [Test Seats] )
+
+// Gross margin per OPPORTUNITY, not per won deal. The denominator has to be
+// exposure, because a price move that wins fewer deals should show up as a loss
+// even when the deals it does win are individually fatter.
+//
+// The CONTROL side needs no stratification, and that is algebra rather than an
+// oversight. The stratified estimator weights each stratum by control-arm
+// exposure, so on the control arm itself it collapses:
+//
+//   SUM_s w_s * (GM_s / opps_s) / SUM_s w_s   where w_s = opps_s
+//     =  SUM_s GM_s / SUM_s opps_s  =  total GM / total opportunities
+//
+// The TEST side does not collapse, because its stratum proportions differ from
+// the control arm's. Leaving it unstratified is exactly the deal-mix bias that
+// inverts the Starter elasticity, and it would put Power BI at odds with
+// sql/01_price_elasticity.sql.
+Control GM per Opportunity =
+DIVIDE( [Control Gross Margin], [Control Opportunities] )
+
+Test GM per Opportunity =
+VAR Strata =
+    FILTER(
+        CALCULATETABLE(
+            VALUES( fact_transactions[deal_type] ),
+            fact_transactions[pricing_variant] IN { "control", "test" }
+        ),
+        [Control Seats] > 0 && [Test Seats] > 0
+    )
+VAR W = SUMX( Strata, [Control Opportunities] )
+RETURN
+    DIVIDE(
+        SUMX( Strata, [Control Opportunities] * DIVIDE( [Test Gross Margin], [Test Opportunities] ) ),
+        W
+    )
+
+Control ACV per Opportunity =
+DIVIDE( [Control Booked ACV], [Control Opportunities] )
+
+Test ACV per Opportunity =
+VAR Strata =
+    FILTER(
+        CALCULATETABLE(
+            VALUES( fact_transactions[deal_type] ),
+            fact_transactions[pricing_variant] IN { "control", "test" }
+        ),
+        [Control Seats] > 0 && [Test Seats] > 0
+    )
+VAR W = SUMX( Strata, [Control Opportunities] )
+RETURN
+    DIVIDE(
+        SUMX( Strata, [Control Opportunities] * DIVIDE( [Test Booked ACV], [Test Opportunities] ) ),
+        W
+    )
+
+// The stratum table is inlined into both measures below rather than factored out.
+// A DAX measure must return a scalar - there is no such thing as a measure that
+// returns a table - so a shared "_Experiment Strata" measure will not compile.
+// The alternatives are a calculated table (evaluated once at refresh, therefore
+// blind to slicers, therefore wrong here) or repeating the VAR. Repeat the VAR.
+//
+// Strata observed in BOTH arms. A deal type present in one arm alone carries no
+// comparison and would otherwise leak in through the weighting.
+
+// Volume-weighted realized price per seat, stratified. Weights are control-arm
+// SEAT volume, because price is a per-seat quantity.
+% Price Change =
+VAR Strata =
+    FILTER(
+        CALCULATETABLE(
+            VALUES( fact_transactions[deal_type] ),
+            fact_transactions[pricing_variant] IN { "control", "test" }
+        ),
+        [Control Seats] > 0 && [Test Seats] > 0
+    )
+VAR W = SUMX( Strata, [Control Seats] )
+VAR ControlP = DIVIDE( SUMX( Strata, [Control Seats] * [Control Price per Seat] ), W )
+VAR TestP    = DIVIDE( SUMX( Strata, [Control Seats] * [Test Price per Seat] ), W )
+RETURN
+    DIVIDE( TestP, ControlP ) - 1
+
+// Seats per opportunity, stratified. Weights are control-arm OPPORTUNITY counts,
+// because quantity is measured per unit of exposure.
+% Quantity Change =
+VAR Strata =
+    FILTER(
+        CALCULATETABLE(
+            VALUES( fact_transactions[deal_type] ),
+            fact_transactions[pricing_variant] IN { "control", "test" }
+        ),
+        [Control Seats] > 0 && [Test Seats] > 0
+    )
+VAR W = SUMX( Strata, [Control Opportunities] )
+VAR ControlQ =
+    DIVIDE( SUMX( Strata, [Control Opportunities] * DIVIDE( [Control Seats], [Control Opportunities] ) ), W )
+VAR TestQ =
+    DIVIDE( SUMX( Strata, [Control Opportunities] * DIVIDE( [Test Seats], [Test Opportunities] ) ), W )
+RETURN
+    DIVIDE( TestQ, ControlQ ) - 1
+
+// E = %dQ / %dP
+Price Elasticity =
+DIVIDE( [% Quantity Change], [% Price Change] )
+
+// Requested as [A/B Test Realized Revenue] - [Baseline Realized Revenue].
+// A raw difference of the two arms' totals is not a valid read: the arms do not
+// carry equal exposure (321 vs 324 opportunities on the canonical dataset, and
+// far wider gaps once a slicer is applied), so the difference mixes the price
+// effect with an accident of assignment. Normalising both arms to revenue per
+// opportunity and re-inflating on the control arm's exposure answers the question
+// actually being asked - what would this price card have earned on the same book.
+Price Elasticity Uplift =
+( [Test ACV per Opportunity] - [Control ACV per Opportunity] ) * [Control Opportunities]
+
+Price Test Margin Uplift =
+VAR Exposure = [Control Opportunities]
+RETURN
+    ( [Test GM per Opportunity] - [Control GM per Opportunity] ) * Exposure
+
+Price Test Margin Uplift % =
+DIVIDE( [Test GM per Opportunity], [Control GM per Opportunity] ) - 1
+
+// FALSIFICATION CHECK. The modelled demand response acts on contracted volume,
+// and win rates were dealt from an exact quota identical across both arms. This
+// must therefore sit near zero. A material gap means assignment or the pipeline
+// is broken - not that the price test moved win rates.
+Win Rate Gap (pp) =
+VAR ControlWR = DIVIDE( [Control Deals Won], [Control Opportunities] )
+VAR TestWR    = DIVIDE( [Test Deals Won], [Test Opportunities] )
+RETURN
+    ( TestWR - ControlWR ) * 100
+
+// Card title for the price-test page. Reads the margin outcome, not the
+// elasticity point estimate - see the caveat in section 02 of docs/.
+Price Test Verdict =
+VAR Uplift = [Price Test Margin Uplift %]
+RETURN
+    SWITCH(
+        TRUE(),
+        ISBLANK( Uplift ),  "No experiment data in context",
+        Uplift < 0,         "REJECT - margin dilutive",
+        Uplift >= 0.05,     "ADOPT",
+        "ADOPT - marginal"
+    )
+
+
+// =============================================================================
+// 03 · RECURRING REVENUE  ·  point-in-time MRR
+//
+// There is no MRR snapshot table. MRR is reconstructed from contract windows:
+// a closed-won contract contributes realized_price / 12 for every month between
+// contract_start_date and contract_end_date.
+//
+// This is the events-in-progress pattern. The ALL() is scoped to just the two
+// date columns rather than the whole table so the engine scans a small distinct
+// set instead of every row.
+//
+// The active relationship runs dim_date -> fact_transactions[close_date], which
+// answers "when was this deal signed". MRR needs "which contracts were running",
+// so the date filter is removed and replaced.
+// =============================================================================
+
+Active MRR =
+VAR AsOf = MAX( dim_date[date_key] )
+RETURN
+    CALCULATE(
+        SUM( fact_transactions[mrr] ),
+        REMOVEFILTERS( dim_date ),
+        FILTER(
+            ALL( fact_transactions[contract_start_date], fact_transactions[contract_end_date] ),
+            fact_transactions[contract_start_date] <= AsOf
+                && fact_transactions[contract_end_date] > AsOf
+        ),
+        fact_transactions[deal_stage] = "closed_won"
+    )
+
+Active ARR =
+[Active MRR] * 12
+
+Active Customers =
+VAR AsOf = MAX( dim_date[date_key] )
+RETURN
+    CALCULATE(
+        DISTINCTCOUNT( fact_transactions[account_id] ),
+        REMOVEFILTERS( dim_date ),
+        FILTER(
+            ALL( fact_transactions[contract_start_date], fact_transactions[contract_end_date] ),
+            fact_transactions[contract_start_date] <= AsOf
+                && fact_transactions[contract_end_date] > AsOf
+        ),
+        fact_transactions[deal_stage] = "closed_won"
+    )
+
+ARPA =
+DIVIDE( [Active MRR], [Active Customers] )
+
+Active MRR PM =
+VAR PriorMonthEnd = EOMONTH( MAX( dim_date[date_key] ), -1 )
+RETURN
+    CALCULATE(
+        SUM( fact_transactions[mrr] ),
+        REMOVEFILTERS( dim_date ),
+        FILTER(
+            ALL( fact_transactions[contract_start_date], fact_transactions[contract_end_date] ),
+            fact_transactions[contract_start_date] <= PriorMonthEnd
+                && fact_transactions[contract_end_date] > PriorMonthEnd
+        ),
+        fact_transactions[deal_stage] = "closed_won"
+    )
+
+Net MRR Change =
+[Active MRR] - [Active MRR PM]
+
+// Movement decomposition, month over month, evaluated per account. Reported as
+// signed values so a waterfall visual stacks without further manipulation.
+Churned MRR =
+VAR AsOf = MAX( dim_date[date_key] )
+VAR PriorMonthEnd = EOMONTH( AsOf, -1 )
+RETURN
+    - SUMX(
+        VALUES( dim_accounts[account_id] ),
+        VAR Now   = [Active MRR]
+        VAR Prior = [Active MRR PM]
+        RETURN IF( Prior > 0 && Now = 0, Prior, 0 )
+    )
+
+New MRR =
+SUMX(
+    VALUES( dim_accounts[account_id] ),
+    VAR Now   = [Active MRR]
+    VAR Prior = [Active MRR PM]
+    RETURN IF( Prior = 0 && Now > 0, Now, 0 )
+)
+
+Expansion MRR =
+SUMX(
+    VALUES( dim_accounts[account_id] ),
+    VAR Now   = [Active MRR]
+    VAR Prior = [Active MRR PM]
+    RETURN IF( Prior > 0 && Now > Prior, Now - Prior, 0 )
+)
+
+Contraction MRR =
+- SUMX(
+    VALUES( dim_accounts[account_id] ),
+    VAR Now   = [Active MRR]
+    VAR Prior = [Active MRR PM]
+    RETURN IF( Prior > 0 && Now > 0 && Now < Prior, Prior - Now, 0 )
+)
+
+
+// =============================================================================
+// 04 · RETENTION  ·  NRR and GRR
+//
+// Both are measured against a CLOSED cohort: the customers who were paying twelve
+// months ago. New logos are excluded from the numerator by construction, which is
+// the whole point - NRR measures what the existing base did, not how much the
+// sales team added on top. A measure that lets new business into the numerator
+// will read comfortably above 100% in any growing company and mean nothing.
+// =============================================================================
+
+// As with the experiment strata above, the prior-year customer base is inlined
+// into each measure. It is a table, and a measure cannot return one.
+
+Net Revenue Retention % =
+VAR AsOf = MAX( dim_date[date_key] )
+VAR PriorDate = EDATE( AsOf, -12 )
+VAR Base =
+    CALCULATETABLE(
+        VALUES( fact_transactions[account_id] ),
+        REMOVEFILTERS( dim_date ),
+        FILTER(
+            ALL( fact_transactions[contract_start_date], fact_transactions[contract_end_date] ),
+            fact_transactions[contract_start_date] <= PriorDate
+                && fact_transactions[contract_end_date] > PriorDate
+        ),
+        fact_transactions[deal_stage] = "closed_won"
+    )
+VAR PriorMRR =
+    CALCULATE(
+        SUM( fact_transactions[mrr] ),
+        REMOVEFILTERS( dim_date ),
+        FILTER(
+            ALL( fact_transactions[contract_start_date], fact_transactions[contract_end_date] ),
+            fact_transactions[contract_start_date] <= PriorDate
+                && fact_transactions[contract_end_date] > PriorDate
+        ),
+        fact_transactions[deal_stage] = "closed_won",
+        Base
+    )
+VAR CurrentMRR =
+    CALCULATE(
+        SUM( fact_transactions[mrr] ),
+        REMOVEFILTERS( dim_date ),
+        FILTER(
+            ALL( fact_transactions[contract_start_date], fact_transactions[contract_end_date] ),
+            fact_transactions[contract_start_date] <= AsOf
+                && fact_transactions[contract_end_date] > AsOf
+        ),
+        fact_transactions[deal_stage] = "closed_won",
+        Base
+    )
+RETURN
+    DIVIDE( CurrentMRR, PriorMRR )
+
+// Gross retention caps every account at its prior-year MRR, so expansion cannot
+// paper over churn. GRR <= NRR always; the gap between them IS the expansion story.
+Gross Revenue Retention % =
+VAR AsOf = MAX( dim_date[date_key] )
+VAR PriorDate = EDATE( AsOf, -12 )
+VAR Base =
+    CALCULATETABLE(
+        VALUES( fact_transactions[account_id] ),
+        REMOVEFILTERS( dim_date ),
+        FILTER(
+            ALL( fact_transactions[contract_start_date], fact_transactions[contract_end_date] ),
+            fact_transactions[contract_start_date] <= PriorDate
+                && fact_transactions[contract_end_date] > PriorDate
+        ),
+        fact_transactions[deal_stage] = "closed_won"
+    )
+VAR PriorMRR =
+    CALCULATE(
+        SUM( fact_transactions[mrr] ),
+        REMOVEFILTERS( dim_date ),
+        FILTER(
+            ALL( fact_transactions[contract_start_date], fact_transactions[contract_end_date] ),
+            fact_transactions[contract_start_date] <= PriorDate
+                && fact_transactions[contract_end_date] > PriorDate
+        ),
+        fact_transactions[deal_stage] = "closed_won",
+        Base
+    )
+VAR RetainedCapped =
+    SUMX(
+        Base,
+        VAR AccountPrior =
+            CALCULATE(
+                SUM( fact_transactions[mrr] ),
+                REMOVEFILTERS( dim_date ),
+                FILTER(
+                    ALL( fact_transactions[contract_start_date], fact_transactions[contract_end_date] ),
+                    fact_transactions[contract_start_date] <= PriorDate
+                        && fact_transactions[contract_end_date] > PriorDate
+                ),
+                fact_transactions[deal_stage] = "closed_won"
+            )
+        VAR AccountNow =
+            CALCULATE(
+                SUM( fact_transactions[mrr] ),
+                REMOVEFILTERS( dim_date ),
+                FILTER(
+                    ALL( fact_transactions[contract_start_date], fact_transactions[contract_end_date] ),
+                    fact_transactions[contract_start_date] <= AsOf
+                        && fact_transactions[contract_end_date] > AsOf
+                ),
+                fact_transactions[deal_stage] = "closed_won"
+            )
+        RETURN MIN( AccountNow, AccountPrior )
+    )
+RETURN
+    DIVIDE( RetainedCapped, PriorMRR )
+
+Logo Retention % =
+VAR AsOf = MAX( dim_date[date_key] )
+VAR PriorDate = EDATE( AsOf, -12 )
+VAR Base =
+    CALCULATETABLE(
+        VALUES( fact_transactions[account_id] ),
+        REMOVEFILTERS( dim_date ),
+        FILTER(
+            ALL( fact_transactions[contract_start_date], fact_transactions[contract_end_date] ),
+            fact_transactions[contract_start_date] <= PriorDate
+                && fact_transactions[contract_end_date] > PriorDate
+        ),
+        fact_transactions[deal_stage] = "closed_won"
+    )
+VAR Survivors =
+    COUNTROWS(
+        FILTER(
+            Base,
+            CALCULATE(
+                SUM( fact_transactions[mrr] ),
+                REMOVEFILTERS( dim_date ),
+                FILTER(
+                    ALL( fact_transactions[contract_start_date], fact_transactions[contract_end_date] ),
+                    fact_transactions[contract_start_date] <= AsOf
+                        && fact_transactions[contract_end_date] > AsOf
+                ),
+                fact_transactions[deal_stage] = "closed_won"
+            ) > 0
+        )
+    )
+RETURN
+    DIVIDE( Survivors, COUNTROWS( Base ) )
+
+
+// =============================================================================
+// 05 · PIPELINE  ·  the only section that reads open deals
+// =============================================================================
+
+Open Pipeline ACV =
+CALCULATE(
+    SUM( fact_transactions[realized_price] ),
+    fact_transactions[deal_stage] = "open"
+)
+
+// Requested as SUMX( fact_transactions, realized_price * win_probability ).
+// Without the stage filter that expression silently includes every closed_won
+// deal ever booked - those carry win_probability = 1 by constraint, so the
+// "forecast" would return all historical revenue plus the pipeline. On the
+// canonical dataset that is EUR 44.8m instead of EUR 1.07m.
+//
+// ck_txn_prob_settled guarantees probability is exactly 1 on won and 0 on lost,
+// so only open deals carry a genuine forecast weight.
+Weighted Pipeline Forecast =
+CALCULATE(
+    SUMX(
+        fact_transactions,
+        fact_transactions[realized_price] * fact_transactions[win_probability]
+    ),
+    fact_transactions[deal_stage] = "open"
+)
+
+Average Win Probability =
+CALCULATE(
+    AVERAGE( fact_transactions[win_probability] ),
+    fact_transactions[deal_stage] = "open"
+)
+
+// How many times the pipeline covers the target. 3x is the usual rule of thumb.
+Pipeline Coverage =
+DIVIDE( [Open Pipeline ACV], [Booked ACV] )
+
+Forecast ACV =
+[Booked ACV] + [Weighted Pipeline Forecast]
+
+
+// =============================================================================
+// 06 · EXPANSION READINESS  ·  usage against what the account bought
+//
+// Mirrors sql/02_tier_expansion.sql. Seats are metered against CONTRACTED seats,
+// not the tier ceiling: "you are paying for 240 seats and using 310" is the
+// commercial conversation. API and storage are metered against the tier's
+// included pools via the calculated columns described in the header.
+// =============================================================================
+
+Latest Usage Date =
+CALCULATE( MAX( fact_usage_metrics[recorded_date] ), REMOVEFILTERS() )
+
+Active Seats =
+VAR Snapshot = [Latest Usage Date]
+RETURN
+    CALCULATE(
+        SUM( fact_usage_metrics[active_seats] ),
+        REMOVEFILTERS( dim_date ),
+        fact_usage_metrics[recorded_date] = Snapshot
+    )
+
+// Seats on contracts running at the snapshot date. Mid-term expansions are sold
+// co-terminus with their parent contract, so overlapping rows are additive rather
+// than double counted.
+Contracted Seats (Live) =
+VAR Snapshot = [Latest Usage Date]
+RETURN
+    CALCULATE(
+        SUM( fact_transactions[contracted_seats] ),
+        REMOVEFILTERS( dim_date ),
+        FILTER(
+            ALL( fact_transactions[contract_start_date], fact_transactions[contract_end_date] ),
+            fact_transactions[contract_start_date] <= Snapshot
+                && fact_transactions[contract_end_date] > Snapshot
+        ),
+        fact_transactions[deal_stage] = "closed_won"
+    )
+
+Seat Utilisation % =
+DIVIDE( [Active Seats], [Contracted Seats (Live)] )
+
+Seats Over Contract =
+MAX( [Active Seats] - [Contracted Seats (Live)], 0 )
+
+// Only seat overage is priced. The rate card in data/pricing_rules.json sells
+// seats and nothing else, so an account over its API or storage pool is surfaced
+// for a conversation rather than sized against an overage rate that does not exist.
+//
+// This will NOT equal the total in sql/02_tier_expansion.sql and is not meant to.
+// This measure is point-in-time: every seat over contract, today. sql/02 is a
+// qualified worklist and additionally requires the breach to have held for two
+// consecutive months with at least four months of history. EUR 895,710 here
+// against EUR 881,640 there - the gap is accounts that only just went over.
+Expansion ACV Opportunity =
+SUMX(
+    VALUES( dim_accounts[account_id] ),
+    VAR Over = [Seats Over Contract]
+    VAR CardPrice =
+        CALCULATE(
+            AVERAGE( dim_tier_entitlements[annual_list_price_per_seat] ),
+            REMOVEFILTERS( fact_transactions ),
+            TREATAS( VALUES( dim_accounts[current_tier] ), dim_tier_entitlements[contract_tier] )
+        )
+    RETURN Over * CardPrice
+)
+
+Accounts Over Capacity =
+COUNTROWS(
+    FILTER(
+        VALUES( dim_accounts[account_id] ),
+        [Seat Utilisation %] > 1
+    )
+)
+
+
+// =============================================================================
+// 07 · FORMATTING
+//
+// Set in the modelling pane, not in DAX. Recording them here so a rebuild does
+// not have to rediscover them.
+//
+//   Booked ACV, Gross Margin, Cost to Serve,
+//   Open Pipeline ACV, Weighted Pipeline Forecast,
+//   Price Elasticity Uplift, Expansion ACV Opportunity ....  #,##0 "EUR"
+//   Active MRR, Active ARR, ARPA, New/Churned/Expansion/
+//   Contraction MRR ......................................  #,##0 "EUR"
+//   Realized Unit Margin %, Discount %, Win Rate %,
+//   % Price Change, % Quantity Change,
+//   Price Test Margin Uplift %, Seat Utilisation % ........  0.0%
+//   Net Revenue Retention %, Gross Revenue Retention %,
+//   Logo Retention % .....................................  0.0%
+//   Price Elasticity .....................................  0.00
+//   Win Rate Gap (pp) ....................................  +0.0;-0.0;0.0
+//   Realized Price per Seat, List Price per Seat ..........  #,##0.00 "EUR"
+// =============================================================================
+
+
+// =============================================================================
+// 08 · VERIFIED EXPECTED VALUES
+//
+// Reproduce with:  python data/seed_data.py --apply-schema --load
+// Canonical dataset: --seed 42, 1,400 accounts. Reporting date 2026-06-30, no
+// slicers applied. Every figure below was produced by re-implementing the
+// measure's semantics in SQL against the loaded warehouse. If a measure returns
+// something else after you paste it into Power BI, the paste is wrong - not the
+// number.
+//
+//   01 BASE
+//     Deals ...................................  2,559
+//     Deals Won / Lost / Open .................  1,993 / 283 / 283
+//     Win Rate % ..............................  87.6%
+//     Booked ACV .............................. EUR 43,679,459
+//     Booked List Value ....................... EUR 48,774,530
+//     Cost to Serve ........................... EUR 13,038,015
+//     Gross Margin ............................ EUR 30,641,444
+//     Realized Unit Margin % ..................  70.15%
+//     Contracted Seats ........................  359,633
+//     Realized Price per Seat ................. EUR 121.46
+//     Discount % ..............................  10.45%
+//     Average Deal Size ....................... EUR 21,916
+//
+//   02 A/B PRICE TEST      (matches sql/01_price_elasticity.sql exactly)
+//     tier          %dP     %dQ       E   GM/opp ctl  GM/opp test  uplift%  WRgap
+//     Starter       7.1   -12.7   -1.80        2,101        2,049    -2.4%    0.0
+//     Growth        6.9    -5.9   -0.86        8,175        8,480    +3.7%   -0.2
+//     Enterprise   12.9    -3.9   -0.30       36,765       41,577   +13.1%    0.7
+//     PORTFOLIO       -       -       -       11,834       12,944    +9.4%      -
+//
+//     Price Elasticity Uplift   Starter    EUR  -28,209
+//                               Growth     EUR    8,783
+//                               Enterprise EUR  286,515
+//                               total      EUR  267,089
+//
+//     Win Rate Gap (pp) sits within +/-0.7 of zero, as it must - see the
+//     falsification note in section 02.
+//
+//   03 RECURRING REVENUE
+//     Active MRR .............................. EUR 2,921,775
+//     Active ARR .............................. EUR 35,061,299
+//     Active Customers ........................  1,282
+//     ARPA .................................... EUR 2,279
+//
+//     Active MRR agrees with the cohort rollup in sql/03_cohort_retention.sql
+//     (EUR 2,921,776, a 1 EUR rounding delta over 1,389 live contracts) and with
+//     the generator's own summary.
+//
+//   04 RETENTION           (2026-06-30 against 2025-06-30)
+//     Net Revenue Retention % .................  99.7%
+//     Gross Revenue Retention % ...............  90.6%
+//     Logo Retention % ........................  84.0%
+//
+//     GRR < NRR always. The 9.1pp gap between them is the expansion story.
+//
+//   05 PIPELINE
+//     Open Pipeline ACV ....................... EUR 2,534,940
+//     Weighted Pipeline Forecast .............. EUR 1,072,890
+//     Average Win Probability .................  0.440
+//
+//   06 EXPANSION READINESS
+//     Active Seats (latest snapshot) ..........  201,607
+//     Contracted Seats (Live) .................  294,221
+//     Seat Utilisation % ......................  68.5%
+//     Accounts Over Capacity ..................  118
+//     Expansion ACV Opportunity ............... EUR 895,710
+// =============================================================================
