@@ -227,19 +227,27 @@ admin, and takes thirty seconds.
 private database engine behind the scenes while a file is open, and that is what you are connecting
 to. Close Power BI and the connection dies.
 
-**Find the port.** In PowerShell:
+**Find the port.** Power BI's engine runs as a process called `msmdsrv`. Ask it which port it is
+listening on — in PowerShell:
 
 ```powershell
-Get-ChildItem "$env:LOCALAPPDATA","$env:LOCALAPPDATA\Packages" -Recurse -Filter msmdsrv.port.txt -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | ForEach-Object { "localhost:" + ((Get-Content $_.FullName -Encoding Unicode -Raw) -replace '\D','') }
+$m = Get-Process msmdsrv -ErrorAction SilentlyContinue | Sort-Object StartTime -Descending | Select-Object -First 1
+if ($m) { Get-NetTCPConnection -OwningProcess $m.Id -State Listen | Sort-Object LocalPort | Select-Object -First 1 | ForEach-Object { "localhost:$($_.LocalPort)" } } else { "Power BI is not open with a model loaded" }
 ```
 
-It prints something like `localhost:52173`. The number changes every time Power BI restarts.
+It prints something like `localhost:54790`. **The number changes every time Power BI restarts**, so
+re-run this if you reconnect later.
 
-> Nothing printed? The .pbix isn't open, or the model has no data yet. Finish Part 1 first.
+> Many guides tell you to read `msmdsrv.port.txt` out of `%LOCALAPPDATA%`. That fails on the
+> Microsoft Store build of Power BI, which keeps its workspace under
+> `%USERPROFILE%\Microsoft\Power BI Desktop Store App\AnalysisServicesWorkspaces\` instead. Asking
+> the process which port it holds works on every build.
+
+> Prints "not open"? Power BI isn't running, or no file is loaded. Finish Part 1 first.
 
 **Connect.** Launch Tabular Editor from the Start menu → **File → Open → From DB…** → paste
-`localhost:52173` into **Server** → leave authentication as Windows → **OK** → the database appears
-in the dropdown, pick it → **OK**.
+`localhost:54790` (your number) into **Server** → leave authentication as Windows → **OK** → the
+database appears in the dropdown, pick it → **OK**.
 
 The model tree (Tables, Measures) appears on the left.
 
@@ -548,6 +556,7 @@ unverified" caveat from the verification table, then commit and push.
 | `winget`: "No package found matching input criteria" | The id ends in `.2` — `TabularEditor.TabularEditor.2`. |
 | `winget`: "No suitable installer found for manifest: Microsoft.DotNet.Framework.DeveloperPack.4.6" | Add `--skip-dependencies`. The developer pack is unpublished; the .NET 4.8 runtime in Windows 11 satisfies the real requirement. |
 | No **External Tools** ribbon in Power BI | Expected on the Microsoft Store build. Use the direct connection in 3.2 instead — it needs no admin. |
+| Port finder prints nothing at all | You searched for `msmdsrv.port.txt`. The Store build does not put it under `%LOCALAPPDATA%`. Use the `Get-NetTCPConnection` version in 3.2. |
 | Tabular Editor: "cannot connect to localhost:NNNNN" | The .pbix must be open in Power BI. The port changes on every restart, so re-run the finder. |
 | "Unable to connect… encryption" | Reopen credentials and flip the encryption setting. Neon requires SSL. |
 | Connection times out | Neon suspends when idle. Try again — the second attempt wakes it. |
