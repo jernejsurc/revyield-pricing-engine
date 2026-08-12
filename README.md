@@ -269,7 +269,14 @@ Every executable artefact in this repository has been executed.
 | Active MRR, three independent derivations | 2,921,776 · 2,921,775 · 2,921,775 |
 | Automation spec (JSON, SQL, idempotency, budget) | **18** checks pass |
 | DAX structural lint against live `information_schema` | **8** checks pass |
+| DAX evaluated in Power BI over ADOMD | **7/7** checkpoint values match, 67 measures |
 | **Neon PostgreSQL 17.10 vs local PostgreSQL 16.2** | **identical on every checked value** |
+
+The DAX check is worth a note. There is no headless DAX engine, so the measures were run against
+Power BI Desktop's own embedded Analysis Services instance over ADOMD — a live query, no UI. It paid
+for itself immediately: `Active MRR` was returning €986,148 against a true €2,921,775, because
+`dim_date` extends eighteen months past the end of the facts and an unsliced card was asking which
+contracts were live in December 2027. Fixed with an `[As Of Date]` clamp.
 
 The automation upsert was replayed three times and inserted exactly one row; a stale `open` replay
 could not reopen a closed-won deal; and every generated column recomputed correctly on write.

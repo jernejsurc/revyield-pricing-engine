@@ -27,7 +27,8 @@
 - [x] `power_bi/measures.dax` — 67 measures: realized margin, elasticity uplift, NRR, weighted pipeline
 - [x] Structural lint against the live warehouse schema (8 checks)
 - [x] Every measure's semantics re-implemented in SQL and given a verified expected value
-- [ ] Paste into Power BI Desktop and confirm the DAX compiles (needs the desktop app)
+- [x] Imported into Power BI Desktop and verified against the live model over ADOMD — 7/7
+      checkpoint values match, 67 measures present
 
 ## Phase 5 — Documentation & positioning
 - [x] `README.md` — badges, Mermaid architecture + ER diagram, findings, quick start, verification
@@ -147,8 +148,20 @@ table would have been evaluated once at refresh and gone blind to slicers.
 and `fact_transactions[contract_tier]` creates two paths to the fact table and Power BI rejects the
 model as ambiguous. Entitlements reach `dim_accounts` via `LOOKUPVALUE` calculated columns instead.
 
-**Known gap:** DAX *syntax* is unverified. There is no headless DAX engine here, so compilation
-needs a paste into Power BI Desktop. What is verified is every measure's semantics and expected value.
+**Gap now closed.** DAX syntax was the one unverified thing in the repository, because there is no
+headless DAX engine. Resolved by connecting to Power BI Desktop's own embedded Analysis Services
+instance over ADOMD and running the measures as a live DAX query — no Power BI UI involved:
+
+```
+$m = Get-Process msmdsrv | Sort-Object StartTime -Descending | Select-Object -First 1
+$port = (Get-NetTCPConnection -OwningProcess $m.Id -State Listen | Select-Object -First 1).LocalPort
+# ADOMD client -> EVALUATE ROW( "BookedACV", [Booked ACV], ... )
+```
+
+**It immediately earned its keep.** `Active MRR` returned €986,148 against a true €2,921,775 and NRR
+43.3% against 99.7% — `dim_date` extends to 2027-12-31 while the facts stop at 2026-06-30, so an
+unsliced card was asking which contracts were live eighteen months after the data ends. Fixed with
+an `[As Of Date]` clamp. Five hand-built cards would have caught it too; a code review would not.
 
 ### Verification performed
 
