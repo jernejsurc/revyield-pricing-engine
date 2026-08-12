@@ -266,11 +266,18 @@ The model tree (Tables, Measures) appears on the left.
 
 ### 3.3 Run the script
 
-In Tabular Editor, click the **Advanced Scripting** tab (bottom of the window, beside "Expression
-Editor").
+**Before running:** in the model tree on the left, expand **Relationships**. There should be five.
+Expand **Tables** and confirm all five tables are present. If either is wrong, Part 2 is unfinished
+— go back and do it, because the measures depend on those joins.
 
-Open `power_bi/create_measures.csx` from the repo in Notepad, copy **everything**, paste into the
-scripting area.
+In Tabular Editor, click the **`C# Script`** tab. It sits at the top of the right-hand pane, beside
+**`Expression Editor`**.
+
+> Older documentation calls this tab "Advanced Scripting". In Tabular Editor 2.28 it is labelled
+> **C# Script**. Same thing.
+
+Open `power_bi/create_measures.csx` from the repo in Notepad, `Ctrl+A`, `Ctrl+C`, then click into
+the large empty area under the C# Script tab and `Ctrl+V`.
 
 Press **F5**.
 
