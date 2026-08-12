@@ -203,25 +203,49 @@ A **measure** is a saved calculation. There are 66 of them, already written in
 
 ## Option A — the fast way (recommended)
 
-### 3.1 Install Tabular Editor
+### 3.1 Install Tabular Editor 2
 
-In a terminal:
+The free version is **Tabular Editor 2**. The winget id ends in `.2` — the `.3` package is the paid
+product, don't install that.
 
 ```bash
-winget install --id TabularEditor.TabularEditor --scope user --silent --accept-source-agreements --accept-package-agreements
+winget install --id TabularEditor.TabularEditor.2 --scope user --silent --skip-dependencies --accept-source-agreements --accept-package-agreements
 ```
 
-Close and reopen Power BI Desktop afterwards so it notices the new tool.
+`--skip-dependencies` is required. Without it winget tries to install a .NET Framework 4.6.2
+*developer pack* that is no longer published, and the whole install aborts. The 4.8 *runtime* ships
+with Windows 11 and satisfies the real requirement — Tabular Editor runs fine.
 
-### 3.2 Open it
+### 3.2 Open your model in Tabular Editor
 
-**External Tools** ribbon → **Tabular Editor**.
+The **External Tools** ribbon in Power BI needs a registration file written to
+`C:\Program Files (x86)\...`, which requires administrator rights — and the Microsoft Store build of
+Power BI Desktop doesn't create that folder at all. Skip it. Connecting directly works, needs no
+admin, and takes thirty seconds.
 
-> If the External Tools ribbon isn't there, or Tabular Editor isn't on it, skip to Option B.
+**First, make sure your .pbix is open in Power BI Desktop with the data loaded.** Power BI runs a
+private database engine behind the scenes while a file is open, and that is what you are connecting
+to. Close Power BI and the connection dies.
+
+**Find the port.** In PowerShell:
+
+```powershell
+Get-ChildItem "$env:LOCALAPPDATA","$env:LOCALAPPDATA\Packages" -Recurse -Filter msmdsrv.port.txt -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | ForEach-Object { "localhost:" + ((Get-Content $_.FullName -Encoding Unicode -Raw) -replace '\D','') }
+```
+
+It prints something like `localhost:52173`. The number changes every time Power BI restarts.
+
+> Nothing printed? The .pbix isn't open, or the model has no data yet. Finish Part 1 first.
+
+**Connect.** Launch Tabular Editor from the Start menu → **File → Open → From DB…** → paste
+`localhost:52173` into **Server** → leave authentication as Windows → **OK** → the database appears
+in the dropdown, pick it → **OK**.
+
+The model tree (Tables, Measures) appears on the left.
 
 ### 3.3 Run the script
 
-In Tabular Editor, click the **Advanced Scripting** tab (near the bottom, beside "Expression
+In Tabular Editor, click the **Advanced Scripting** tab (bottom of the window, beside "Expression
 Editor").
 
 Open `power_bi/create_measures.csx` from the repo in Notepad, copy **everything**, paste into the
@@ -239,11 +263,16 @@ parsed  : 66   (expected 66)
   Tabular Editor.
 - **Says anything else** → **do not save.** Close Tabular Editor without saving and use Option B.
 
+> **Ctrl+S writes straight into the running Power BI model.** There is no undo. That is why the
+> script refuses to look successful unless it parsed exactly 66.
+
 ### 3.4 Confirm
 
 Back in Power BI Desktop, the **Data** pane should show measures under `fact_transactions` — a
 calculator icon (▣) rather than a column icon — grouped into folders like `01 BASE` and
 `02 A/B PRICE TEST`.
+
+If they don't appear immediately, click any other table and back again to refresh the pane.
 
 ## Option B — by hand
 
@@ -516,6 +545,10 @@ unverified" caveat from the verification table, then commit and push.
 
 | Symptom | Cause and fix |
 |---|---|
+| `winget`: "No package found matching input criteria" | The id ends in `.2` — `TabularEditor.TabularEditor.2`. |
+| `winget`: "No suitable installer found for manifest: Microsoft.DotNet.Framework.DeveloperPack.4.6" | Add `--skip-dependencies`. The developer pack is unpublished; the .NET 4.8 runtime in Windows 11 satisfies the real requirement. |
+| No **External Tools** ribbon in Power BI | Expected on the Microsoft Store build. Use the direct connection in 3.2 instead — it needs no admin. |
+| Tabular Editor: "cannot connect to localhost:NNNNN" | The .pbix must be open in Power BI. The port changes on every restart, so re-run the finder. |
 | "Unable to connect… encryption" | Reopen credentials and flip the encryption setting. Neon requires SSL. |
 | Connection times out | Neon suspends when idle. Try again — the second attempt wakes it. |
 | A measure shows *(Blank)* | Usually a missing relationship. Recheck Part 2.3. |
