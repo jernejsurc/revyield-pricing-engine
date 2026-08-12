@@ -723,16 +723,29 @@ MAX( [Active Seats] - [Contracted Seats (Live)], 0 )
 // qualified worklist and additionally requires the breach to have held for two
 // consecutive months with at least four months of history. EUR 895,710 here
 // against EUR 881,640 there - the gap is accounts that only just went over.
+// CONTEXT TRANSITION IS LOAD-BEARING HERE.
+//
+// SUMX puts a ROW context on dim_accounts[account_id]. A row context does not
+// filter anything, so a bare VALUES( dim_accounts[current_tier] ) inside the
+// iteration returns ALL THREE tiers, and the account gets priced at the average
+// of the three rate cards (EUR 170/seat) instead of its own. On this dataset
+// that reads EUR 1,186,090 against a true EUR 895,710 - and only when no tier is
+// in the visual, so it looks right in a table broken down by tier and wrong on
+// a card. The worst kind of wrong.
+//
+// CALCULATE( SELECTEDVALUE(...) ) forces the transition, so each account is
+// priced on the tier it is actually on.
 Expansion ACV Opportunity =
 SUMX(
     VALUES( dim_accounts[account_id] ),
-    VAR Over = [Seats Over Contract]
+    VAR AccountTier = CALCULATE( SELECTEDVALUE( dim_accounts[current_tier] ) )
     VAR CardPrice =
         CALCULATE(
             AVERAGE( dim_tier_entitlements[annual_list_price_per_seat] ),
-            REMOVEFILTERS( fact_transactions ),
-            TREATAS( VALUES( dim_accounts[current_tier] ), dim_tier_entitlements[contract_tier] )
+            REMOVEFILTERS(),
+            dim_tier_entitlements[contract_tier] = AccountTier
         )
+    VAR Over = [Seats Over Contract]
     RETURN Over * CardPrice
 )
 

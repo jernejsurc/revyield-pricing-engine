@@ -148,7 +148,9 @@ for (int i = 0; i < names.Count; i++)
 foreach (var m in Model.AllMeasures)
 {
     var n = m.Name;
-    if (n.EndsWith("%") || n.Contains("Retention") || n.Contains("Utilisation"))
+    // StartsWith("%") matters: "% Price Change" and "% Quantity Change" are
+    // ratios that would otherwise render as 0.07 instead of 7.1%.
+    if (n.EndsWith("%") || n.StartsWith("%") || n.Contains("Retention") || n.Contains("Utilisation"))
         m.FormatString = "0.0%";
     else if (n == "Price Elasticity" || n == "Average Win Probability")
         m.FormatString = "0.00";
