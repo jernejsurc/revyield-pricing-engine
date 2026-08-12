@@ -216,6 +216,19 @@ winget install --id TabularEditor.TabularEditor.2 --scope user --silent --skip-d
 *developer pack* that is no longer published, and the whole install aborts. The 4.8 *runtime* ships
 with Windows 11 and satisfies the real requirement — Tabular Editor runs fine.
 
+**Then give yourself a way to launch it.** winget installs the *portable* build, which creates no
+Start menu entry and no desktop icon — searching the Start menu for "Tabular" finds nothing. Run
+this once to add a shortcut (no admin needed):
+
+```powershell
+$exe = "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\TabularEditor.TabularEditor.2_Microsoft.Winget.Source_8wekyb3d8bbwe\TabularEditor.exe"
+$s = (New-Object -ComObject WScript.Shell).CreateShortcut("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Tabular Editor 2.lnk")
+$s.TargetPath = $exe; $s.WorkingDirectory = Split-Path $exe; $s.Save()
+```
+
+It will then appear as **Tabular Editor 2** in the Start menu. Alternatively, winget registered a
+command alias, so typing `TabularEditor` in a **newly opened** terminal also launches it.
+
 ### 3.2 Open your model in Tabular Editor
 
 The **External Tools** ribbon in Power BI needs a registration file written to
@@ -245,9 +258,9 @@ re-run this if you reconnect later.
 
 > Prints "not open"? Power BI isn't running, or no file is loaded. Finish Part 1 first.
 
-**Connect.** Launch Tabular Editor from the Start menu → **File → Open → From DB…** → paste
-`localhost:54790` (your number) into **Server** → leave authentication as Windows → **OK** → the
-database appears in the dropdown, pick it → **OK**.
+**Connect.** Launch Tabular Editor (Start menu shortcut from 3.1) → **File → Open → From DB…** →
+paste `localhost:54790` (your number) into **Server** → leave authentication as Windows → **OK** →
+the database appears in the dropdown, pick it → **OK**.
 
 The model tree (Tables, Measures) appears on the left.
 
