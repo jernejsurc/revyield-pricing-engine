@@ -43,7 +43,7 @@ Five pieces, in the order data moves through them.
 | 2 | **The data generator** | Invents a realistic company: 1,400 customers, 2,559 deals, two and a half years of history. |
 | 3 | **Three analyses** | Answer three business questions — did the price rise work, who should we upsell, are we keeping our revenue. |
 | 4 | **The automation** | A blueprint for connecting the sales CRM so this runs by itself instead of someone re-doing it monthly. |
-| 5 | **The dashboard layer** | 66 pre-built calculations so Power BI can show all of this visually. |
+| 5 | **The dashboard layer** | 67 pre-built calculations so Power BI can show all of this visually. |
 
 ## 4 · Why the data is invented — and why that's the point
 

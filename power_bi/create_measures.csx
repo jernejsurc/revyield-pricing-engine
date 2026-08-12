@@ -6,7 +6,7 @@
  * section headers.
  *
  * WHY THIS EXISTS
- *   Power BI Desktop has no bulk measure import. There are 66 measures. Typing
+ *   Power BI Desktop has no bulk measure import. There are 67 measures. Typing
  *   them by hand is an hour of transcription errors, and measures.dax stays the
  *   single source of truth this way - re-running the script updates in place
  *   rather than duplicating.
@@ -21,7 +21,7 @@
  *             Select-Object -First 1 LocalPort
  *   3. Tabular Editor > File > Open > From DB > localhost:<port>
  *   4. Paste this whole file into the "C# Script" tab and press F5.
- *   5. Confirm it reports 66, then Ctrl+S to write into Power BI.
+ *   5. Confirm it reports 67, then Ctrl+S to write into Power BI.
  *
  * NOTE ON SYNTAX
  *   Tabular Editor compiles this inside a method body, so `using` directives
@@ -162,11 +162,11 @@ foreach (var m in Model.AllMeasures)
 }
 
 var report =
-    "parsed  : " + names.Count + "   (expected 66)\n" +
+    "parsed  : " + names.Count + "   (expected 67)\n" +
     "created : " + created + "\n" +
     "updated : " + updated + "\n" +
     "skipped : " + skipped + "\n\n" +
-    (names.Count == 66
+    (names.Count == 67
         ? "Parse count matches. Close this box, then Ctrl+S to push into Power BI Desktop."
         : "PARSE COUNT MISMATCH - do NOT save. Report the number instead.");
 

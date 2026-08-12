@@ -29,7 +29,7 @@ portfolio margin number is the wrong thing to look at."
 
 Place under **Projects**. Each is metric-led and survives a follow-up question.
 
-**1.** Built an end-to-end pricing analytics engine (Neon PostgreSQL, Python/`psycopg` v3, 66 DAX
+**1.** Built an end-to-end pricing analytics engine (Neon PostgreSQL, Python/`psycopg` v3, 67 DAX
 measures in Power BI) evaluating an A/B list-price test across three SaaS tiers; recovered demand
 elasticities from **−1.80 to −0.30** and produced a differentiated price card worth **+13.1% gross
 margin on Enterprise** while identifying a **−2.4% margin loss** from the same uplift on SMB.
@@ -48,7 +48,7 @@ Neon) with idempotent upserts and database-enforced integrity; re-architected du
 from an N+1 into a single batched call, cutting the workload from **~1,270 to 766 operations/month**
 to fit the free tier.
 
-**Optional fifth**, if the role leans BI: Modelled a Power BI star schema with 66 production DAX
+**Optional fifth**, if the role leans BI: Modelled a Power BI star schema with 67 production DAX
 measures, including point-in-time MRR via the events-in-progress pattern, cohort-based NRR/GRR, and
 a weighted pipeline forecast — catching a stage-filter omission that would have overstated the
 forecast by a factor of 42.
@@ -63,7 +63,7 @@ The project is deliberately a mirror of the DCS role. Say so — it is the stron
 |---|---|
 | "Led A/B testing for rate-structure changes, achieving a pricing uplift and €55K incremental revenue" | The FY26-H1 price test, with the statistics done properly |
 | "Identified €200K in annual revenue leakage" | €881,640 of unbilled seat overage from the Expansion Readiness Index |
-| "Built dynamic revenue dashboards in Power BI (Snowflake SQL) for C-level" | 66 DAX measures on a Postgres star schema |
+| "Built dynamic revenue dashboards in Power BI (Snowflake SQL) for C-level" | 67 DAX measures on a Postgres star schema |
 | "Developed segment-specific pricing models using demand signals and price elasticity" | Tier-level elasticity with confidence intervals |
 
 **How to frame it:** *"I've done this work with real revenue at DCS. What I couldn't show from that

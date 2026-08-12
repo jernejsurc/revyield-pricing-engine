@@ -370,25 +370,52 @@ RETURN
 // so the date filter is removed and replaced.
 // =============================================================================
 
+// ---------------------------------------------------------------------------
+// THE DATE TABLE IS LONGER THAN THE DATA, AND EVERY POINT-IN-TIME MEASURE MUST
+// ALLOW FOR IT.
+//
+// dim_date is populated to 2027-12-31 so the model has room for future close
+// dates and forward-looking analysis. The facts stop at 2026-06-30.
+//
+// A measure that naively takes MAX( dim_date[date_key] ) therefore asks "which
+// contracts were live on 31 December 2027?" the moment it is put on a card with
+// no date slicer — and by then almost everything has expired. Measured on this
+// dataset that returns EUR 986,148 against a true EUR 2,921,775, and drags NRR
+// from 99.7% to 43.3%.
+//
+// [As Of Date] clamps the reporting date to the last date with data, so a bare
+// card answers "as of now" while a date axis still reports each period properly.
+// ---------------------------------------------------------------------------
+
+// Latest month-end actually present in the facts. Defined in section 06 and
+// reused here.
+
+As Of Date =
+MIN( MAX( dim_date[date_key] ), [Latest Usage Date] )
+
 Active MRR =
-VAR AsOf = MAX( dim_date[date_key] )
+VAR AsOf = [As Of Date]
+VAR PeriodStart = MIN( dim_date[date_key] )
 RETURN
-    CALCULATE(
-        SUM( fact_transactions[mrr] ),
-        REMOVEFILTERS( dim_date ),
-        FILTER(
-            ALL( fact_transactions[contract_start_date], fact_transactions[contract_end_date] ),
-            fact_transactions[contract_start_date] <= AsOf
-                && fact_transactions[contract_end_date] > AsOf
-        ),
-        fact_transactions[deal_stage] = "closed_won"
+    IF(
+        PeriodStart <= [Latest Usage Date],
+        CALCULATE(
+            SUM( fact_transactions[mrr] ),
+            REMOVEFILTERS( dim_date ),
+            FILTER(
+                ALL( fact_transactions[contract_start_date], fact_transactions[contract_end_date] ),
+                fact_transactions[contract_start_date] <= AsOf
+                    && fact_transactions[contract_end_date] > AsOf
+            ),
+            fact_transactions[deal_stage] = "closed_won"
+        )
     )
 
 Active ARR =
 [Active MRR] * 12
 
 Active Customers =
-VAR AsOf = MAX( dim_date[date_key] )
+VAR AsOf = [As Of Date]
 RETURN
     CALCULATE(
         DISTINCTCOUNT( fact_transactions[account_id] ),
@@ -405,7 +432,7 @@ ARPA =
 DIVIDE( [Active MRR], [Active Customers] )
 
 Active MRR PM =
-VAR PriorMonthEnd = EOMONTH( MAX( dim_date[date_key] ), -1 )
+VAR PriorMonthEnd = EOMONTH( [As Of Date], -1 )
 RETURN
     CALCULATE(
         SUM( fact_transactions[mrr] ),
@@ -424,15 +451,12 @@ Net MRR Change =
 // Movement decomposition, month over month, evaluated per account. Reported as
 // signed values so a waterfall visual stacks without further manipulation.
 Churned MRR =
-VAR AsOf = MAX( dim_date[date_key] )
-VAR PriorMonthEnd = EOMONTH( AsOf, -1 )
-RETURN
-    - SUMX(
-        VALUES( dim_accounts[account_id] ),
-        VAR Now   = [Active MRR]
-        VAR Prior = [Active MRR PM]
-        RETURN IF( Prior > 0 && Now = 0, Prior, 0 )
-    )
+- SUMX(
+    VALUES( dim_accounts[account_id] ),
+    VAR Now   = [Active MRR]
+    VAR Prior = [Active MRR PM]
+    RETURN IF( Prior > 0 && Now = 0, Prior, 0 )
+)
 
 New MRR =
 SUMX(
@@ -473,7 +497,7 @@ Contraction MRR =
 // into each measure. It is a table, and a measure cannot return one.
 
 Net Revenue Retention % =
-VAR AsOf = MAX( dim_date[date_key] )
+VAR AsOf = [As Of Date]
 VAR PriorDate = EDATE( AsOf, -12 )
 VAR Base =
     CALCULATETABLE(
@@ -516,7 +540,7 @@ RETURN
 // Gross retention caps every account at its prior-year MRR, so expansion cannot
 // paper over churn. GRR <= NRR always; the gap between them IS the expansion story.
 Gross Revenue Retention % =
-VAR AsOf = MAX( dim_date[date_key] )
+VAR AsOf = [As Of Date]
 VAR PriorDate = EDATE( AsOf, -12 )
 VAR Base =
     CALCULATETABLE(
@@ -572,7 +596,7 @@ RETURN
     DIVIDE( RetainedCapped, PriorMRR )
 
 Logo Retention % =
-VAR AsOf = MAX( dim_date[date_key] )
+VAR AsOf = [As Of Date]
 VAR PriorDate = EDATE( AsOf, -12 )
 VAR Base =
     CALCULATETABLE(

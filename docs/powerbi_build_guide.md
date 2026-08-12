@@ -198,7 +198,7 @@ Now they order Starter → Growth → Enterprise everywhere.
 
 # Part 3 · Add the measures
 
-A **measure** is a saved calculation. There are 66 of them, already written in
+A **measure** is a saved calculation. There are 67 of them, already written in
 `power_bi/measures.dax`.
 
 ## Option A — the fast way (recommended)
@@ -284,15 +284,15 @@ Press **F5**.
 A message box appears. It must say:
 
 ```
-parsed  : 66   (expected 66)
+parsed  : 67   (expected 67)
 ```
 
-- **Says 66** → good. Close the box, press **Ctrl+S** to save back into Power BI, then close
+- **Says 67** → good. Close the box, press **Ctrl+S** to save back into Power BI, then close
   Tabular Editor.
 - **Says anything else** → **do not save.** Close Tabular Editor without saving and use Option B.
 
 > **Ctrl+S writes straight into the running Power BI model.** There is no undo. That is why the
-> script refuses to look successful unless it parsed exactly 66.
+> script refuses to look successful unless it parsed exactly 67.
 
 ### 3.4 Confirm
 

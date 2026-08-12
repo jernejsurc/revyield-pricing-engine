@@ -87,7 +87,7 @@ flowchart LR
     end
 
     subgraph OUT["Consumption"]
-        PBI["Power BI<br/><i>66 DAX measures</i>"]
+        PBI["Power BI<br/><i>67 DAX measures</i>"]
         GS["Google Sheets<br/><i>exception log</i>"]
     end
 
@@ -290,7 +290,7 @@ could not reopen a closed-won deal; and every generated column recomputed correc
 ├── automation/
 │   └── make_scenario_spec.json     HubSpot → margin calc → Google Sheets + Neon
 ├── power_bi/
-│   └── measures.dax                66 production DAX measures
+│   └── measures.dax                67 production DAX measures
 ├── docs/
 │   ├── how-it-works.md             plain-English walkthrough + glossary
 │   ├── executive_summary.md        one-page commercial briefing

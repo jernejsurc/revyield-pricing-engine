@@ -24,7 +24,7 @@
 - [x] Operations budget recomputed from its own inputs (766 / 1,000)
 
 ## Phase 4 — Power BI
-- [x] `power_bi/measures.dax` — 66 measures: realized margin, elasticity uplift, NRR, weighted pipeline
+- [x] `power_bi/measures.dax` — 67 measures: realized margin, elasticity uplift, NRR, weighted pipeline
 - [x] Structural lint against the live warehouse schema (8 checks)
 - [x] Every measure's semantics re-implemented in SQL and given a verified expected value
 - [ ] Paste into Power BI Desktop and confirm the DAX compiles (needs the desktop app)
@@ -163,7 +163,7 @@ needs a paste into Power BI Desktop. What is verified is every measure's semanti
   upsert replayed three times inserts exactly one row, and a stale `open` replay cannot reopen a
   closed-won deal. Test rows rolled back.
 - Phase 4: 8 lint checks pass — all 20 distinct `table[column]` references resolve against the live
-  `information_schema`, every `[Measure]` reference is defined, brackets balance in all 66 measures,
+  `information_schema`, every `[Measure]` reference is defined, brackets balance in all 67 measures,
   no measure returns a table, every money/seat measure filters `deal_stage` transitively, and the
   pipeline measures scope to open deals. Expected values recorded in section 08 of `measures.dax`;
   the A/B block reproduces `sql/01` exactly and Active MRR agrees with `sql/03` to €1.
