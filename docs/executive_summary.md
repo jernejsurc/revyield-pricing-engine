@@ -69,9 +69,10 @@ customer to accept a price rise.
 
 ## What would change our minds
 
-**Sample size is the honest limitation.** At ~130 opportunities per arm, only the Starter volume
-response is statistically significant (95% CI on elasticity [−3.11, −0.34]). Growth [−2.05, 0.44]
-and Enterprise [−1.26, 0.79] both include zero.
+**Sample size is the honest limitation.** With 67–132 opportunities per arm depending on tier, only
+the Starter volume response is statistically significant (95% CI on elasticity [−3.11, −0.34]).
+Growth [−2.05, 0.44] and Enterprise [−1.26, 0.79] both include zero — and Enterprise, carrying our
+strongest recommendation, has the thinnest sample of the three.
 
 This does not undermine the margin findings — realized price is measured precisely and margin is
 observed rather than inferred. It does mean the **elasticity coefficients are directional**. The

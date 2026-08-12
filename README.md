@@ -20,6 +20,17 @@ automation contract, Power BI semantic layer, and this documentation.
 > truth, precisely so the SQL can be *graded* on whether it recovers that truth. No figure here
 > describes a real company or real customers.
 
+### 👋 New here?
+
+**[Read `docs/how-it-works.md`](docs/how-it-works.md)** — the same project explained without jargon,
+in about five minutes, including a glossary. Start there if you don't write SQL.
+
+The short version: a software company sells three subscription packages and wants to raise prices.
+Rather than guessing, it ran a real experiment — half the customers kept the old prices, half got
+new ones — and then measured what actually happened to sales volume and profit. The answer turned
+out to be different for each package, which is why a single company-wide number is the wrong thing
+to look at.
+
 ---
 
 ## The headline
@@ -44,8 +55,9 @@ discount governance, and leave Starter on the legacy card.
 
 ### An honest caveat, stated up front
 
-At roughly 130 opportunities per arm, **only the Starter volume response is statistically
-significant**. The Growth and Enterprise confidence intervals include zero.
+With 67–132 opportunities per arm depending on tier, **only the Starter volume response is
+statistically significant**. The Growth and Enterprise confidence intervals include zero — and
+Enterprise, the tier carrying the strongest result, has the thinnest sample.
 
 The *margin* verdicts stand regardless — realized price is measured precisely and margin is
 observed, not inferred. But the elasticity coefficients are directional, not settled. A pricing
@@ -280,7 +292,9 @@ could not reopen a closed-won deal; and every generated column recomputed correc
 ├── power_bi/
 │   └── measures.dax                66 production DAX measures
 ├── docs/
-│   └── executive_summary.md        one-page commercial briefing
+│   ├── how-it-works.md             plain-English walkthrough + glossary
+│   ├── executive_summary.md        one-page commercial briefing
+│   └── interview_prep.md           pitch, resume bullets, likely questions
 ├── CLAUDE.md                       build and maintenance guide
 └── tasks/todo.md                   build log and design decisions
 ```
