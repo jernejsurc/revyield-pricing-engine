@@ -73,7 +73,24 @@ each other page and edit the text. Identical placement is the point.
 
 Power BI names visuals after their fields. A field list is not a title.
 
-Select each → **Format → General → Title** → replace:
+**Where the setting lives:**
+
+1. Click the visual once so its selection handles appear
+2. **Visualizations** pane → the **paint-roller icon** 🖌️ (*"Format your visual"*),
+   under the grid of chart types
+3. Two sub-tabs appear — **Visual** and **General**. Click **General**
+4. Expand **Title**
+5. Type into the **Text** field
+
+> **The Text box will look empty**, even though a title is plainly showing on the
+> visual. Power BI auto-generates one from the field names whenever the box is
+> blank, so there is nothing to find and edit — just type over the emptiness and
+> it overrides permanently.
+>
+> Font, size and colour sit in the same section, but the theme already sets them.
+> Only **Text** needs touching.
+
+Replace as follows:
 
 | Auto-generated | Use instead |
 |---|---|
