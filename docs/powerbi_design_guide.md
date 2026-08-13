@@ -1,111 +1,81 @@
-# Making the RevYield report look professional
+# Making the RevYield report clear, usable and good-looking
 
-Follow after the four pages exist. Roughly 45 minutes, and it is the difference
-between "someone learning Power BI" and "someone who has shipped dashboards".
+Picks up after the four pages exist and `power_bi/revyield_theme.json` is applied.
+Roughly 50 minutes, in six parts. Each part stands alone — stop after any of them
+and the report is better than when you started.
 
-The default Power BI look is not neutral — it actively reads as unfinished. Grey
-gridlines, auto-generated titles like *"Control GM per Opportunity and Test GM
-per Opportunity by contract_tier"*, and a bright multi-colour palette all say the
-same thing: nobody made a decision here.
+**The test this guide is aiming at:** someone who has never seen the report opens
+page 2 and understands the finding within five seconds, without asking you a
+single question.
 
 ---
 
-## Step 0 · Fix these first, before any styling
+## What the theme already did
 
-Cosmetics on top of wrong numbers is wasted effort.
+Don't redo these by hand:
 
-| Fix | Where |
+| Already handled | |
 |---|---|
-| Industry slicer → **Dropdown** | Long labels cannot render as tiles |
-| Delete the report-level `month_end` filter | It blanks Weighted Pipeline Forecast |
-| Expansion table → `dim_accounts[current_tier]` | Stops every account appearing twice |
-| Expansion table → **Totals: Off** | A summed-percentage total is meaningless |
-| Price Test matrix → **Row subtotals: Off** | Pools three price cards into a nonsense average |
-| Price Test matrix → sort by `contract_tier` | Click the column header, not a value column |
+| Colour palette | One accent blue, green/red reserved for good and bad |
+| Fonts | Segoe UI throughout, consistent sizes |
+| Cards | 30pt semibold value, grey label, **display units None** |
+| Bar/column charts | Value axis off, gridlines off, data labels on |
+| Line charts | 3px stroke, markers on, dotted gridlines |
+| Tables/matrix | Dark header, banded rows, subtotals off |
+| Every visual | White fill, 8px rounded corners, soft shadow, hairline border |
+| Page canvas | `#F4F6F8`, so white cards read as raised |
+
+What a theme **cannot** touch is everything below: what things are called, how
+they are arranged, how the reader moves around, and what the report explains
+about itself.
 
 ---
 
-## Step 1 · One theme, one accent colour
+# Part A · Correctness first
 
-**View → Themes → Customize current theme.**
+Styling on top of wrong numbers is wasted work. Six fixes, five minutes.
 
-Set these under **Name and colours → Theme colours**:
-
-| Slot | Hex | Used for |
+| # | Fix | How |
 |---|---|---|
-| Colour 1 | `#1A4D6D` | Deep blue — the default for everything |
-| Colour 2 | `#2E8B57` | Green — positive / test arm |
-| Colour 3 | `#C0392B` | Red — negative / warnings |
-| Colour 4 | `#7F8C8D` | Grey — context and secondary series |
-| Colour 5 | `#D4A017` | Amber — "needs attention" |
-| Colour 6 | `#34495E` | Slate |
+| A1 | Industry slicer → **Dropdown** | Select it → chevron **⌄** top-right → Dropdown. Long labels cannot render as tiles — that is why it looked empty |
+| A2 | Delete the report-level `month_end` filter | Filters pane → *Filters on all pages* → hover → **✕**. It was blanking Weighted Pipeline Forecast, because open deals close after June 2026 |
+| A3 | Expansion table → `dim_accounts[current_tier]` | Remove `dim_tier_entitlements[contract_tier]`, drag in `current_tier`. Stops every upgraded account appearing twice |
+| A4 | Expansion table → **Totals: Off** | Format → Totals. A summed-percentage total is meaningless |
+| A5 | Price Test matrix → **Row subtotals: Off** | Format → Row subtotals. Pools three price cards into a nonsense average |
+| A6 | Price Test matrix → sort by tier | Click the **contract_tier** header until it reads Starter → Growth → Enterprise |
 
-Then **Text → General**: font **Segoe UI**, size **10**.
-**Text → Title**: size **14**, colour `#1A4D6D`, bold.
-
-> **Why one accent instead of a rainbow.** Colour should carry meaning. If
-> everything is coloured, nothing is emphasised. Deep blue is the default; green
-> and red are reserved for good and bad. A reader learns that in about four
-> seconds and then reads the whole report faster.
+> A2 is safe to delete now. `Active MRR` returns blank for months after the data
+> ends, so the line chart stops on its own — the filter is doing nothing except
+> hiding your pipeline.
 
 ---
 
-## Step 2 · Page backgrounds and a title bar
+# Part B · Make it read as one product
 
-For each page: click empty canvas → **Format → Canvas background** → colour
-`#F4F6F8`, transparency **0%**.
+### B1 · A header bar on every page
 
-Then give each page a header:
+1. **Insert → Shapes → Rectangle**. Stretch across the top, about 60px tall
+2. **Format shape → Style → Fill** `#1A4D6D`, **Border** off
+3. **Insert → Text box** on top, white, size 18, bold — the page title
+4. Second text box beside it, white at 70% transparency, size 10 — the subtitle
 
-1. **Insert → Shapes → Rectangle**, stretch across the top, ~60px tall
-2. Fill `#1A4D6D`, no border
-3. **Insert → Text box** on top of it, white text, size 18, bold
-
-| Page | Title | Subtitle (size 10, white, 70% opacity) |
+| Page | Title | Subtitle |
 |---|---|---|
 | 1 | RevYield · Executive Overview | Booked performance, recurring revenue and open pipeline |
 | 2 | RevYield · FY26-H1 Price Test | Did the price rise work, and for whom? |
 | 3 | RevYield · Expansion Pipeline | Accounts consuming more than they contracted |
 | 4 | RevYield · Retention | What the existing customer base did |
 
-Consistent headers across four pages is the single cheapest thing that makes a
-report look designed.
+Build it once on page 1, select all three objects, `Ctrl+C`, then `Ctrl+V` on
+each other page and edit the text. Identical placement is the point.
 
----
+### B2 · Retitle every visual
 
-## Step 3 · Make the cards look like KPIs
+Power BI names visuals after their fields. A field list is not a title.
 
-Your cards currently sit on white with a thin border. Select each, then:
+Select each → **Format → General → Title** → replace:
 
-**Format → General → Effects**
-- **Background**: white, 0% transparency
-- **Visual border**: On, colour `#E1E5EA`, rounded corners **8**
-- **Shadow**: On, preset *Outer → Bottom right*, 20% transparency
-
-**Format → Callout value**
-- Font size **32**, bold, colour `#1A4D6D`
-- **Display units: None** for anything under 10 million — `43,679,459` is more
-  credible than `44M`, and precision is the point on a pricing dashboard
-
-**Format → Category label**
-- Font size **11**, colour `#7F8C8D`
-
-Do it once, then use the **format painter** (Home ribbon) to copy that styling to
-every other card.
-
-> **Set display units to None deliberately.** "44M" on a margin dashboard invites
-> "44 million what, and rounded how?" Show the number.
-
----
-
-## Step 4 · Kill the auto-generated titles
-
-Power BI names visuals after their fields. *"Control GM per Opportunity and Test
-GM per Opportunity by contract_tier"* is a field list, not a title.
-
-Select each visual → **Format → General → Title** → write what the chart *means*:
-
-| Auto-generated | Replace with |
+| Auto-generated | Use instead |
 |---|---|
 | Booked ACV by contract_tier | Where the revenue is |
 | Realized Unit Margin % by contract_tier | Margin improves with tier size |
@@ -113,92 +83,114 @@ Select each visual → **Format → General → Title** → write what the chart
 | Booked ACV by region | Revenue by region |
 | Control GM per Opportunity and Test GM per Opportunity by contract_tier | **Test arm beats control everywhere except Starter** |
 | Expansion ACV Opportunity by region | Where the unbilled seats are |
-| New MRR, Expansion MRR and Churned MRR by month_end | MRR movement |
+| Active MRR and Active Customers by month_end | Customers and revenue both compounding |
+| New MRR, Expansion MRR and Churned MRR by month_end | MRR movement, month by month |
 
-Title font: **12**, bold, `#1A4D6D`.
+The bolded one carries the whole report. A title that states the finding means
+the reader gets it even if they never study the bars.
 
-The bolded one matters most. A title that states the finding means the reader
-gets it even if they never look at the bars.
+### B3 · Give the page a focal point
 
----
+Right now every card on page 1 is the same size, so nothing leads. Make
+**Booked ACV** and **Realized Unit Margin %** about 1.4× the others and put them
+first. On a pricing dashboard, revenue and margin are the headline; pipeline and
+retention are support.
 
-## Step 5 · Strip the chart clutter
-
-For every bar and column chart:
-
-- **Y axis → Gridlines: Off**
-- **Y axis → Title: Off** (the visual title already says it)
-- **X axis → Title: Off**
-- **Data labels: On**, size 9 — then **Y axis: Off** entirely
-
-Labels on the bars beat an axis the reader has to trace across. One or the other,
-never both.
-
-For the two line charts:
-
-- **Lines → Stroke width: 3**, **Shape → Smooth: Off** — smoothing invents data
-  points between months that do not exist
-- **Gridlines**: horizontal only, `#E1E5EA`, dotted
-- **Markers: On** for the MRR line, so each month-end reading is a real point
+Same on page 2: the matrix is the star. Give it the full width of the page and
+put everything else underneath it.
 
 ---
 
-## Step 6 · Colour that carries meaning
+# Part C · Make it navigable
 
-**Page 2, the control-vs-test chart.** This is the most important visual in the
-report — set the colours by hand:
+This is the part that separates "four disconnected tabs" from something that
+feels like an application.
 
-- `Control GM per Opportunity` → grey `#7F8C8D`
-- `Test GM per Opportunity` → green `#2E8B57`
+### C1 · A navigation bar
 
-Then **conditional formatting on the Starter test bar is not possible per-column
-in a clustered chart** — instead, add a text callout beside it:
+**Insert → Buttons → Navigator → Page navigator.**
 
-> **Insert → Text box:** "Starter is the exception: the test arm earns *less* per
-> opportunity."
+Power BI generates a button per page automatically and keeps it in sync if you
+rename or add pages. Place it inside the header bar on the right.
 
-**Page 2, the matrix.** Select it → **Format → Cell elements**:
+Then style it: **Format → Style → State: Selected** → fill white, text `#1A4D6D`.
+**State: Default** → fill transparent, text white. Now the current page is
+obvious at a glance.
 
-- Series `Price Test Margin Uplift %` → **Background colour → On** → **Rules**:
-  - if value `< 0` → `#FADBD8` (pale red)
-  - if value `>= 0` → `#D5F5E3` (pale green)
-- Series `Price Elasticity` → **Font colour → Rules**:
-  - `< -1` → `#C0392B` (elastic — a price rise loses money)
-  - `>= -1` → `#2E8B57` (inelastic — a price rise earns)
+Copy it to all four pages in the same position.
 
-That single rule turns the matrix into the argument: Starter red, the others
-green, no explanation needed.
+### C2 · Sync the slicers
 
-**Page 3, the target list.** Series `Seat Utilisation %` → **Data bars → On**,
-positive bar `#D4A017`.
+Right now filtering by region on page 1 does nothing to pages 2–4, which will
+confuse anyone who tries it.
+
+1. **View → Sync slicers** (opens a pane)
+2. Select the region slicer
+3. Tick **Sync** for all four pages; tick **Visible** only for page 1
+
+Repeat for industry and tier. Filters now follow the reader around, but the
+slicers themselves only take up space on page 1.
+
+### C3 · A reset button
+
+Once people start filtering, they need a way back.
+
+1. Clear all slicers so the report is in its default state
+2. **View → Bookmarks → Add**, rename it `Reset`
+3. On the bookmark's **…** menu, make sure **Data** is ticked and **Display** is unticked
+4. **Insert → Buttons → Reset**, place it in the header bar
+5. **Format → Action → On**, Type **Bookmark**, Bookmark `Reset`
+
+### C4 · Control what filters what
+
+By default every visual cross-filters every other one, which produces surprising
+results — clicking a region bar silently changes your price-test matrix.
+
+Select the region bar chart → **Format ribbon → Edit interactions**. Icons appear
+on every other visual. Set the cards to **None** (a filtered KPI headline is
+misleading) and leave the charts on **Filter**.
+
+On page 2, set the matrix to **None** from everything. It is the result of a
+controlled experiment; nobody should be able to slice it by accident.
 
 ---
 
-## Step 7 · Alignment
+# Part D · Make the report explain itself
 
-Sloppy alignment is what most portfolio dashboards get wrong, and it is entirely
-mechanical to fix.
+### D1 · Conditional formatting that carries the argument
 
-1. Select several visuals with `Ctrl+click`
-2. **Format** ribbon → **Align** → *Align top* / *Align left*
-3. **Distribute horizontally** to even the gaps
+**Page 2 matrix** — select it → **Format → Cell elements**.
 
-Rules that work on a 1280×720 canvas:
+Choose series `Price Test Margin Uplift %` → **Background colour → On → fx**:
+- Format style **Rules**
+- If value `< 0` → `#FADBD8` (pale red)
+- If value `>= 0` → `#D5F5E3` (pale green)
 
-- Cards in one row, equal width, 16px gaps
-- Charts in a 2-column grid, equal widths
-- Slicers together along one edge — never scattered
-- Nothing overlapping, nothing touching the canvas edge
-- 20px outer margin on all four sides
+Choose series `Price Elasticity` → **Font colour → On → fx**:
+- If value `< -1` → `#C0392B`
+- If value `>= -1` → `#2E8B57`
 
-**View → Show gridlines** and **Snap to grid** make this almost automatic.
+Starter turns red, the other two green. The recommendation becomes visible
+without a sentence of explanation — this is the single highest-value five
+minutes in the whole guide.
 
----
+**Page 3 table** — `Seat Utilisation %` → **Data bars → On**, positive bar
+`#D4A017`. A reader scans bar lengths far faster than numbers.
 
-## Step 8 · The caveat text box
+### D2 · Richer tooltips
 
-On page 2, below the matrix. **Insert → Text box**, background `#FEF9E7`, border
-`#D4A017`:
+Hovering should answer the obvious follow-up question.
+
+Select the "Where the revenue is" chart → in the **Visualizations** pane find the
+**Tooltips** well → drag in `Deals Won`, `Realized Price per Seat`, `Discount %`.
+
+Hovering a tier bar now shows revenue *plus* how many deals, at what price, at
+what discount. Same idea on page 3: add `current_acv` and `next_renewal_date`.
+
+### D3 · Explain the two things nobody will guess
+
+**Page 2**, under the matrix — **Insert → Text box**, background `#FEF9E7`,
+border `#D4A017`:
 
 > **Read with care.** Only the Starter volume response is statistically
 > significant (95% CI −3.11 to −0.34). Growth and Enterprise intervals include
@@ -206,43 +198,97 @@ On page 2, below the matrix. **Insert → Text box**, background `#FEF9E7`, bord
 > smallest sample. Margin findings are robust: realised price is measured
 > directly. Elasticity figures are directional.
 
-And a footer on page 1, grey, size 9:
+**Page 2**, beside the win-rate card — small grey text, size 9:
+
+> Win rates were held equal across both arms by design. A gap near zero confirms
+> the experiment ran cleanly.
+
+That second one turns a boring number into evidence of rigour. Most people
+delete the card because it "looks like nothing"; the note is why it stays.
+
+### D4 · A footer
+
+Page 1, bottom, grey, size 9:
 
 > Simulated data, generated from a known demand model so the analysis can be
-> validated against ground truth. github.com/jernejsurc/revyield-pricing-engine
+> validated against ground truth · github.com/jernejsurc/revyield-pricing-engine
+
+Pre-empts the first question anyone asks, and puts the repository in front of
+whoever is looking at the screen.
 
 ---
 
-## Step 9 · Final pass
+# Part E · Accessibility
 
-Walk all four pages and check:
+Quick, and it is the kind of thing an interviewer notices because almost nobody
+does it.
+
+**E1 · Alt text.** Select each visual → **Format → General → Alt text** → one
+sentence describing what it shows. Screen readers use it; so does anyone who
+exports the report.
+
+**E2 · Tab order.** **View → Selection pane → Tab order** tab. Drag so the header
+comes first, then KPI cards, then charts. Send decorative shapes to the bottom
+and mark them **hidden in tab order**.
+
+**E3 · Don't rely on colour alone.** Red/green is roughly 8% of men to some
+degree. The matrix already carries the numbers alongside the colour, so it is
+fine — but if you add a chart where colour is the only signal, add a label too.
+
+**E4 · Check contrast.** The theme's `#34495E` on white and white on `#1A4D6D`
+both clear WCAG AA. If you introduce new colours, keep them at 4.5:1 or better
+against their background.
+
+---
+
+# Part F · Alignment, then ship
+
+Sloppy alignment is the most common tell in portfolio dashboards, and it is
+entirely mechanical.
+
+1. **View → Show gridlines** and **Snap to grid**, both on
+2. `Ctrl+click` a row of visuals → **Format ribbon → Align → Align top**
+3. Same selection → **Distribute horizontally**
+
+Rules that work on the default 1280×720 canvas:
+
+- 20px outer margin on all four sides
+- 16px between visuals, consistently
+- Cards in one row, equal height
+- Charts on a 2-column grid, equal widths
+- Nothing overlapping, nothing touching an edge
+
+### Final checklist
 
 - [ ] No visual titled with a field list
-- [ ] No axis titled with a column name
-- [ ] Every card uses display units **None**
-- [ ] Tiers read Starter → Growth → Enterprise everywhere
-- [ ] No total row that sums percentages
-- [ ] Every page has the same header bar
+- [ ] Every page has the same header bar and navigator, in the same place
+- [ ] Slicers sync across pages; only visible on page 1
+- [ ] Reset button works
+- [ ] Cards do not get cross-filtered by chart clicks
+- [ ] Page 2 matrix cannot be filtered by anything
+- [ ] Elasticity and uplift are colour-coded
+- [ ] The caveat box is on page 2
+- [ ] Alt text on every visual
 - [ ] Nothing overlaps; nothing touches the edge
-- [ ] Slicers reset to "All" before screenshots
-- [ ] The green/red usage is consistent on every page
+- [ ] Slicers reset to All before screenshots
 
-Then **View → Page view → Fit to page**, and screenshot pages 1 and 2 into
-`power_bi/screenshots/`.
+Then **View → Page view → Fit to page**, and capture pages 1 and 2 into
+`power_bi/screenshots/` as `overview.png` and `price-test.png`.
 
 ---
 
 ## What a reviewer actually notices
 
-In rough order of impact:
+Roughly in order of impact:
 
-1. **Consistent colour with meaning** — one accent, red and green reserved
-2. **Titles that state findings**, not field names
-3. **Alignment** — the fastest tell of care
-4. **Whitespace** — cramped dashboards read as anxious
-5. **Precision** — `43,679,459`, not `44M`
-6. **The caveat box** — nothing signals seniority like flagging your own limits
+1. **Titles that state findings** rather than field names
+2. **Conditional formatting that makes the argument visible** without reading
+3. **Consistent colour with meaning** — one accent, red and green reserved
+4. **Navigation that works** — it feels like a product, not four exports
+5. **Alignment and whitespace** — the fastest signal of care
+6. **Precision** — `43,679,459`, not `44M`
+7. **The caveat box** — nothing reads as senior like flagging your own limits
 
-Notably absent: chart variety. Four bar charts and two line charts, all styled
-identically, beat a donut, a gauge, a treemap and a funnel. Reach for a new chart
-type only when the shape of the data demands it.
+Conspicuously absent: chart variety. Six charts of two types, styled identically,
+beat a donut, a gauge, a treemap and a funnel every time. Reach for a new chart
+type only when the shape of the data demands it — not to fill space.
